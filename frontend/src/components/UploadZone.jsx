@@ -5,7 +5,7 @@ const IS_DEV = import.meta.env.DEV
 // ─── File validation ───────────────────────────────────────────────────────────
 
 const MAX_BYTES = 5 * 1024 * 1024  // 5 MB
-const MAX_PDF_PAGES = 20
+const MAX_PDF_PAGES = 30
 
 const EXT_MIME = {
   jpg:  'image/jpeg',
