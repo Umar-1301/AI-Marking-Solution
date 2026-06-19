@@ -1,17 +1,12 @@
-import { readFileSync } from 'fs'
-import { fileURLToPath } from 'url'
-import { dirname, join } from 'path'
 import { createHmac } from 'crypto'
 import bcrypt from 'bcrypt'
 import { teacherDb } from '../db/index.js'
+import config from '../config/index.js'
 
-const __dirname   = dirname(fileURLToPath(import.meta.url))
 const BCRYPT_COST = 12
 const NAME_MAX    = 100
 
-const { passwordPepper: PASSWORD_PEPPER, emailPepper: EMAIL_PEPPER } = JSON.parse(
-    readFileSync(join(__dirname, 'pepper.json'), 'utf-8')
-)
+const { PASSWORD_PEPPER, EMAIL_PEPPER } = config
 
 // Emails use HMAC-SHA256 (deterministic) so login lookup remains possible.
 function hashEmail(email) {

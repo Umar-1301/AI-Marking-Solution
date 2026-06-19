@@ -1,0 +1,56 @@
+# BACKEND_URL must be set as a container environment variable, e.g.
+#   http://backend:3001                                  (local docker-compose)
+#   http://backend-testing-web-app.internal...           (Azure Container Apps)
+# The official nginx:alpine entrypoint runs envsubst on this file at container
+# start, substituting ${BACKEND_URL} — nginx's own $variables (e.g. $host,
+# $scheme, $uri) are left untouched since they aren't OS environment variables.
+
+server {
+    listen 80;
+    server_name _;
+
+    # Two-file uploads (studentWork + markScheme) are 5MB each — give nginx
+    # headroom above multer's combined limit.
+    client_max_body_size 10m;
+
+    # Backend API — /api/auth/login -> ${BACKEND_URL}/auth/login (prefix stripped)
+    location /api/ {
+        proxy_pass ${BACKEND_URL}/;
+
+        # Azure Container Apps' ingress (Envoy) rejects HTTP/1.0 with 426 Upgrade
+        # Required. nginx proxies as HTTP/1.0 by default, so force 1.1 and clear
+        # the Connection header so the upstream connection can be kept alive.
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+
+        # Azure Container Apps' internal ingress routes by SNI + Host to pick the
+        # target app. So the Host must be the BACKEND's hostname ($proxy_host =
+        # the host from proxy_pass), NOT the frontend's ($host), and SNI must be
+        # sent on the upstream TLS handshake. Without these, ACA can't route the
+        # request to the backend and returns 502. (Locally this didn't matter:
+        # BACKEND_URL was a direct http://container, no ingress, no TLS.)
+        proxy_ssl_server_name on;
+        proxy_set_header Host $proxy_host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # /lessons and /upload stream NDJSON progress — don't buffer the
+        # response, and allow enough time for OCR to complete.
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+
+    # Frontend static files (SPA — client-side routing falls back to index.html)
+    location / {
+        root /usr/share/nginx/html;
+        try_files $uri $uri/ /index.html;
+
+        # Security headers scoped to the pages nginx serves. /api responses are
+        # intentionally NOT given these — the backend's helmet already sets them,
+        # so scoping here avoids duplicate/conflicting headers on proxied responses.
+        add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    }
+}

@@ -1,0 +1,12 @@
+# Keep the build context small and never copy host-specific or secret files.
+.venv
+venv
+**/__pycache__
+*.pyc
+.env
+local.env            # contains TORCH_DEVICE=mps — must not override the image's cpu setting
+.DS_Store
+samples              # test images are sent from the host via curl, not baked in
+*.csv                # docker stats output
+chandra-response.json
+pyrightconfig.json

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
+import { initSchema } from './schema.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname  = dirname(__filename)
@@ -13,6 +14,11 @@ const db = new Database(DB_PATH)
 // be enabled per-connection — SQLite defaults to off for backwards compat.
 db.pragma('journal_mode = WAL')
 db.pragma('foreign_keys = ON')
+
+// Build the schema BEFORE preparing any statements below. On a fresh database
+// (e.g. a new container) the tables don't exist yet, and db.prepare() against a
+// missing table throws — so the schema must be created here first.
+initSchema(db)
 
 // Least-privilege accessor for the teachers table only.
 // Prepared once at startup — users.js imports this instead of the raw db

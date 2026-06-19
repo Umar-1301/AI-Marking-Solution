@@ -2,7 +2,8 @@ import { createContext, useContext, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { refreshSession } from '../services/api'
 
-const API_BASE = import.meta.env.VITE_API_URL
+// Relative path — see services/api.js for why.
+const API_BASE = '/api'
 
 const AuthContext = createContext(null)
 

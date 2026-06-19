@@ -15,7 +15,7 @@ if _env_file.exists():
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, File, UploadFile
 from model.marker import run_marking
-from model.ocr import _get_model, run_ocr
+from model.ocr import _get_model, model_loaded, run_ocr
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -23,6 +23,13 @@ async def lifespan(_: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan)
+
+# ── GET /health ─────────────────────────────────────────────────────────────
+# Liveness/readiness probe for Azure Container Apps. Returns model_loaded:false
+# during the cold-start window while the weights are still loading, then true.
+@app.get("/health")
+def health():
+    return {"status": "ok", "model_loaded": model_loaded()}
 
 # ── POST /ocr ─────────────────────────────────────────────────────────────────
 # Single-file OCR endpoint. First in the marking queue — used for mark scheme

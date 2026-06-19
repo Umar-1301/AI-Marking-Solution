@@ -1,0 +1,21 @@
+# Deps are reinstalled in the image; never copy the host's.
+node_modules
+
+# Secrets and machine-local config — supplied as env vars at deploy time.
+.env
+src/data/pepper.json
+
+# Local SQLite DB + WAL/SHM companions — a fresh one is created on boot (I4).
+src/data/*.sqlite
+src/data/*.sqlite-shm
+src/data/*.sqlite-wal
+src/data/*.sqlite-journal
+
+# Legacy flat-file accounts — excluding it means a clean DB with no stale migration.
+src/data/users.json
+
+# Local logs — the container writes its own.
+logs
+
+.DS_Store
+npm-debug.log*

@@ -6,6 +6,14 @@ export default {
         if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET environment variable is not set')
         return process.env.JWT_SECRET
     })(),
+    PASSWORD_PEPPER: (() => {
+        if (!process.env.PASSWORD_PEPPER) throw new Error('PASSWORD_PEPPER environment variable is not set')
+        return process.env.PASSWORD_PEPPER
+    })(),
+    EMAIL_PEPPER: (() => {
+        if (!process.env.EMAIL_PEPPER) throw new Error('EMAIL_PEPPER environment variable is not set')
+        return process.env.EMAIL_PEPPER
+    })(),
     MAX_FILE_SIZE_MB: 5,
     MAX_PDF_PAGES: 30,
     ALLOWED_MIME_TYPES: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'],

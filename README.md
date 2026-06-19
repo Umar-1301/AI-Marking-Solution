@@ -136,6 +136,181 @@ Azure, Azure Container Apps Jobs, Azure Container Registry, Azure Storage, Data 
 
 ---
 
+## Change 2c — Front and Backend Dockerisation
+
+Containerises the backend (Node/Express) and finalises the frontend image — completing the set of three Azure-ready images (frontend, backend, Chandra). Includes I4: making the SQLite database work at container runtime.
+
+### Backend image (new)
+
+[backend/Dockerfile](backend/Dockerfile) + [backend/.dockerignore](backend/.dockerignore).
+
+- **Multi-stage build** — a build stage carrying the native-addon toolchain (`better-sqlite3`, `bcrypt`, `sharp` are C/C++ modules), and a lean runtime stage that ships no compilers.
+- **Non-root** — runs as the `node` user, with `src/data` and `logs` owned by it. Smaller blast radius for a service holding auth and the database.
+- **Env-driven, nothing baked** — `PORT`, `FRONTEND_URL`, `AI_SERVICE_URL`, `JWT_SECRET` and the peppers all come from the Container App at deploy; the three secrets fail-fast on startup if missing.
+- **`.dockerignore`** excludes the local `.sqlite`, `.env`, `users.json` and `pepper.json` so the image gets a clean DB and no leaked secrets (while keeping `10k-most-common.txt` and `users.js`).
+
+Why the backend needed far less work than the frontend: it was already a portable, env-configured server — `node src/server.js` runs identically in dev and prod. Containerising it was packaging, not re-architecting.
+
+### I4 — SQLite at container runtime
+
+The DB file is gitignored, so a container starts with **no database**. Two fixes:
+
+1. **Directory baked in** — `mkdir -p src/data` so `better-sqlite3` can create a fresh `aimira.sqlite` on first boot, and `schema.js` builds the tables via `CREATE TABLE IF NOT EXISTS`.
+2. **Startup ordering bug fixed** — [db/index.js](backend/src/db/index.js) prepared SQL statements at import time (e.g. `SELECT … FROM teachers`), but the tables were only created later by `db/schema.js`. This worked locally **only because a `.sqlite` file already existed** from previous runs; on a fresh container it crashed with `no such table: teachers`. Fixed by turning `schema.js` into an `initSchema(db)` function that [index.js](backend/src/db/index.js) calls **immediately after opening the connection, before any statement is prepared** ([schema.js](backend/src/db/schema.js), [server.js](backend/src/server.js)). The DB layer is now correctly self-initialising whether or not the file pre-exists.
+
+⚠️ Container storage is **ephemeral**: data resets on restart and is not shared across replicas. Deploy the backend as a **single replica** for now; PostgreSQL is the persistent long-term fix.
+
+### Frontend image (finalised)
+
+The Dockerfile and nginx config were built in Change 2a. The change here is **scoping the security headers to the static content**: nginx's `add_header` directives sat at the `server` level, so they were also applied to proxied `/api` responses — which already carry the backend's helmet headers, producing duplicate and conflicting headers (e.g. `X-Frame-Options: DENY` from nginx vs `SAMEORIGIN` from helmet). Moved them into `location /` ([nginx.conf.template](frontend/nginx.conf.template)) so nginx only sets them on the pages it serves, and the backend owns its own response headers.
+
+### Validation
+
+All three images were built for `linux/amd64` and tested locally: the backend boots and self-creates the DB (`aimira.sqlite` + WAL companions); the frontend serves the SPA and proxies `/api` to the backend over a Docker network (mirroring how Azure resolves the internal FQDN), returning the backend's response with no duplicate headers.
+
+### Deploy intent (ingress)
+
+- **Frontend** → external ingress (public — the browser's only entry point).
+- **Backend** → internal ingress (only the frontend's nginx reaches it, via `/api`).
+- **Chandra** → internal ingress (only the backend reaches it).
+
+---
+
+## Change 2b — Containerising Chandra: I5 + I6
+
+Packages the Chandra OCR model as its own container for Azure Container Apps. It runs as a standalone internal service ([ai-service/Dockerfile](ai-service/Dockerfile)), reached only by the backend.
+
+### I6 — Sizing: measured, not guessed
+
+Instead of assuming a profile, we ran Chandra in a CPU container locally and pushed a real 23-page mark scheme through `/ocr`:
+
+| Metric | Result |
+|---|---|
+| Idle RAM (model loaded) | 3.68 GiB |
+| Peak RAM during OCR | 15.16 GiB |
+| Time per page (CPU) | ~5-7 min (23 pages ≈ 2.5 hrs) |
+
+The binding constraint is **compute, not memory** — CPU inference is unusably slow (a single page exceeds nginx's 300s proxy timeout). Conclusion: Chandra needs a **GPU**, not a large CPU box. Target: Azure serverless GPU **NC8as-T4** (NVIDIA T4, 16 GB VRAM) — the bf16 model fits in ~8-10 GB, with the 1280px image cap bounding activation memory.
+
+The test scaffolding isn't in the code, but two production features were kept from it: a `/health` readiness probe ([main.py](ai-service/main.py)) and env-driven thread caps ([ocr.py](ai-service/model/ocr.py)).
+
+### I5 — PyTorch architecture
+
+Local dev uses MPS torch (Mac); Azure GPU nodes are linux/amd64 with NVIDIA CUDA. Fixed by the Dockerfile: an `nvidia/cuda` base built for `--platform linux/amd64`, where pip resolves the CUDA torch build automatically — no separate requirements file needed.
+
+### The image
+
+- **Base:** `nvidia/cuda:13.0.0-cudnn-runtime` (amd64) — GPU runtime for Azure.
+- **Weights baked in:** `datalab-to/chandra-ocr-2` (bf16) downloaded at build, so the container starts ready and never re-downloads.
+- **Offline at runtime:** `HF_HUB_OFFLINE=1` — no Hugging Face calls on start.
+- **Listens on `0.0.0.0:8000`**, serving `/ocr`, `/mark`, `/health`.
+
+### Security
+
+- **Internal ingress only** — reachable solely from the backend over the Container Apps network; never exposed to the browser or public internet.
+- **No runtime external dependency** — offline weight loading works behind locked-down egress and can't be stalled by a Hugging Face outage.
+- **No host config leak** — `.dockerignore` excludes `local.env` (which holds `TORCH_DEVICE=mps`) and caches from the image.
+- **Concurrency 1 per replica** (deploy-time) bounds VRAM — Azure scales replicas rather than stacking jobs.
+
+---
+
+## Change 2a — Migrating to Azure: I1–3 + I7–8
+
+This change prepares the application for deployment to Azure Container Apps. The issues addressed here are the ones that would prevent the containerised build from starting, serving cookies correctly, or routing API calls — everything that must work before the application is even reachable in Azure. Issues I4–I6 (SQLite at runtime, PyTorch architecture, and Chandra model sizing) are deferred to a follow-on change.
+
+---
+
+### I1 — Pepper values moved from `pepper.json` to environment variables
+
+**Problem**
+
+Passwords and emails are pre-hashed with an HMAC pepper before being passed to bcrypt. Previously, the pepper values were read at startup from a hardcoded file path (`src/data/pepper.json`). That file was gitignored, which meant it had to be manually placed on every server. In a container environment there is no persistent filesystem to drop files into — the file would simply not exist at runtime.
+
+**Fix**
+
+`pepper.json` is removed entirely. `PASSWORD_PEPPER` and `EMAIL_PEPPER` are now read from environment variables and validated at startup in `backend/src/config/index.js`, using the same pattern already in place for `JWT_SECRET` (throws immediately on boot if either value is missing). Both variables are documented in `backend/.env.example`.
+
+**Azure path**
+
+When deploying to Azure Container Apps, these values will be pulled from Azure Key Vault and injected as container environment variables, keeping secrets out of the image and out of source control entirely.
+
+---
+
+### I2 — Trust proxy added
+
+**Problem**
+
+Azure Container Apps places an ingress proxy in front of every container. Without `trust proxy`, Express reads `req.ip` as the proxy's internal IP address rather than the real client IP. This causes every user's request to appear to come from the same address, which collapses all users into a single rate-limit bucket — the global 100-requests-per-hour limit would be hit immediately under any real load.
+
+**Fix**
+
+`app.set('trust proxy', 1)` is added to `backend/src/server.js` before any middleware is registered. A trust level of 1 tells Express to read the client IP from the first `X-Forwarded-For` hop, which is set by the Azure ingress, rather than from the raw TCP connection.
+
+---
+
+### I3 — Cross-origin cookie problem resolved via single-origin gateway
+
+**Problem**
+
+The auth cookie is set with `sameSite: lax`. In development, frontend and backend both run under `localhost` so the cookie is treated as same-site and sent on every request. In a container deployment, each service gets its own domain, so the browser considers requests cross-site and the cookie is silently dropped — every authenticated API call fails.
+
+**Fix**
+
+The solution is to route all traffic through a single domain. Nginx (introduced in I8) acts as the gateway: it serves the frontend static files and proxies `/api/*` to the backend container, stripping the `/api` prefix before forwarding. From the browser's perspective, every request — whether loading a page or calling the API — goes to the same origin. The cookie is always same-site.
+
+Two supporting changes flow from this:
+
+- `secure: true` is now hardcoded in the cookie options (previously `process.env.NODE_ENV === 'production'`). Browsers treat `http://localhost` as a secure context, so this works in local dev as well as production HTTPS.
+- All frontend `fetch` calls are switched from absolute URLs (`import.meta.env.VITE_API_URL`) to relative paths (`/api/...`). The `VITE_API_URL` environment variable is removed entirely, and `frontend/.env.example` is updated to reflect that no variables are currently needed.
+
+---
+
+### I7 — Vite and Nginx API path clash resolved
+
+**Problem**
+
+Vite embedded `VITE_API_URL` into the built bundle at build time. In production, nginx's CSP treats that absolute URL as a foreign origin and blocks the requests. Even if CSP were relaxed, the URL would be wrong inside a container where services communicate over an internal Docker network, not `localhost`.
+
+**Fix**
+
+All API calls now use the relative path `/api` as a constant, set directly in `frontend/src/services/api.js`, `Login.jsx`, `Signup.jsx`, and `AuthContext.jsx`. This path resolves against whatever origin served the page — it is correct in both dev and production without any build-time substitution.
+
+In development, a Vite dev server proxy is added to `vite.config.js`: requests to `/api/*` are forwarded to `http://localhost:3001` with the `/api` prefix stripped, mirroring exactly what nginx does in production. This means the same relative fetch call works unchanged across both environments.
+
+The CSP `connect-src` directive no longer needs to include an external URL — `'self'` is sufficient in both Vite's dev headers and nginx's production headers.
+
+---
+
+### I8 — Two-stage Docker build and nginx serving for the frontend
+
+**Problem**
+
+Locally the frontend is served by Vite's dev server directly from source files. That is not appropriate for a container image: Vite is a development tool, the source files include unbuilt JSX, and the dev server has no nginx-style request routing. A production container needs a compiled, optimised build served by a proper web server.
+
+**Fix**
+
+Three new files are introduced in `frontend/`:
+
+**`Dockerfile`** — a two-stage build. Stage one uses `node:22-bookworm-slim` to run `npm ci` and `npm run build`, producing the compiled static files in `/app/dist`. Stage two copies only that `/dist` directory into an `nginx:1.27-alpine` image. Vite never runs in the final image. The `BACKEND_URL` environment variable defaults to `http://backend:3001` (correct for local docker-compose) and can be overridden with the Azure Container Apps internal URL at deploy time.
+
+**`nginx.conf.template`** — nginx configuration with two responsibilities. The `location /` block serves static files from `/usr/share/nginx/html` with SPA fallback (`try_files $uri $uri/ /index.html`). The `location /api/` block proxies requests to `${BACKEND_URL}/` with the `/api` prefix stripped, sets `X-Forwarded-For` and `X-Forwarded-Proto` headers, disables response buffering, and allows 300 seconds for long-running OCR streams. Security headers (CSP, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`) and a 10 MB body limit are set at the server level. The `${BACKEND_URL}` placeholder is substituted by `envsubst` when the container starts, using the official nginx:alpine entrypoint's template mechanism.
+
+**`.dockerignore`** — excludes `node_modules`, `dist`, and `.env` from the build context so they are never copied into the image.
+
+---
+
+### Summary
+
+| Issue | Root cause | Fix |
+|---|---|---|
+| I1 | Pepper in a file that can't exist in a container | Moved to env vars, validated at startup |
+| I2 | Ingress proxy collapses all client IPs | `trust proxy 1` added to Express |
+| I3 | Separate container domains break same-site cookies | Single-origin nginx gateway; all API calls use relative `/api` paths; `secure: true` hardcoded |
+| I7 | Absolute `VITE_API_URL` baked into bundle, rejected by CSP | Removed; relative `/api` constant used everywhere; Vite proxy mirrors nginx in dev |
+| I8 | Vite dev server not suitable for container deployment | Two-stage Docker build: Node builds, nginx serves; nginx config handles routing and security headers |
+
+---
+
 ## Change 1: Application Build — Database, Authentication & Core Features
 
 This change covers the full application build from scratch: a relational database, a secure authentication system, a classes and students management API, a mark scheme OCR pipeline, and the frontend pages that tie everything together. Each section below describes what was built and the security decisions made alongside it.

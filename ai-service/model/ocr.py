@@ -1,5 +1,6 @@
 import gc
 import io
+import os
 import time
 import torch
 import filetype as ft
@@ -12,10 +13,16 @@ from chandra.model.schema import BatchInputItem
 from chandra.output import parse_markdown
 from chandra.settings import settings
 
-# Cap CPU threads before the model loads.
-# Leaves the remaining cores free for the OS, browser, and other apps.
-torch.set_num_threads(6)
-torch.set_num_interop_threads(3)
+# Cap CPU threads before the model loads. Defaults match the local M3 Pro tuning
+# (leaves cores free for the OS/browser); in a container set these to the
+# replica's vCPU count via TORCH_NUM_THREADS so torch doesn't oversubscribe the
+# cgroup CPU limit. A value of 0 leaves torch's own default in place.
+_n_threads = int(os.environ.get("TORCH_NUM_THREADS", "6"))
+_n_interop = int(os.environ.get("TORCH_INTEROP_THREADS", "3"))
+if _n_threads > 0:
+    torch.set_num_threads(_n_threads)
+if _n_interop > 0:
+    torch.set_num_interop_threads(_n_interop)
 
 # chandra's internal cap is 3072×2048 (~34 GiB attention on M3 Pro).
 # 1280 on the long side → ~6 k tokens → ~4.4 GiB attention, safely within 18 GB unified memory.
@@ -31,6 +38,11 @@ def _get_model():
         _model = load_model()
         print("[OCR] Model ready")
     return _model
+
+
+def model_loaded() -> bool:
+    """True once the weights are resident — used by the /health readiness probe."""
+    return _model is not None
 
 
 def _cap_image(image: Image.Image) -> tuple[Image.Image, bool]:

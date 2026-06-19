@@ -1,9 +1,9 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
 export default defineConfig(({ mode }) => {
-    const env = loadEnv(mode, process.cwd(), '')
-    const apiUrl = env.VITE_API_URL || ''
+    // Frontend and backend are served from the same origin (gateway routes
+    // /api to the backend container), so connect-src only ever needs 'self'.
 
     // Dev CSP: 'unsafe-inline' is required because Vite's dev server injects the
     // React Refresh preamble as an inline <script> and CSS as inline <style> elements.
@@ -14,7 +14,7 @@ export default defineConfig(({ mode }) => {
         "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
         "font-src 'self' https://fonts.gstatic.com",
         "img-src 'self' data:",
-        `connect-src 'self' ws://localhost:* ${apiUrl}`,
+        "connect-src 'self' ws://localhost:*",
         "base-uri 'self'",
         "form-action 'self'",
     ].join('; ')
@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
         "style-src 'self' https://fonts.googleapis.com",
         "font-src 'self' https://fonts.gstatic.com",
         "img-src 'self' data:",
-        `connect-src 'self' ${apiUrl}`,
+        "connect-src 'self'",
         "base-uri 'self'",
         "form-action 'self'",
     ].join('; ')
@@ -38,6 +38,16 @@ export default defineConfig(({ mode }) => {
         plugins: [react()],
         server: {
             headers: { 'Content-Security-Policy': csp },
+            // Mirrors the production gateway: /api/* is forwarded to the backend
+            // with the /api prefix stripped, so the same relative fetch('/api/...')
+            // calls work unchanged in dev and prod.
+            proxy: {
+                '/api': {
+                    target: 'http://localhost:3001',
+                    changeOrigin: true,
+                    rewrite: (path) => path.replace(/^\/api/, ''),
+                },
+            },
         },
         preview: {
             headers: { 'Content-Security-Policy': prodCSP },

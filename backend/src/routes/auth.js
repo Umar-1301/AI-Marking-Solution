@@ -12,11 +12,13 @@ const router = express.Router()
 const TOKEN_EXPIRY = '1h'
 
 // Cookie issued with every token — httpOnly keeps it off the JavaScript heap.
-// secure:true is enforced in production (HTTPS only); sameSite:lax gives
-// CSRF protection while allowing same-site cross-port requests in development.
+// secure:true requires HTTPS, but browsers treat http://localhost as a secure
+// context, so this also works for local dev. sameSite:lax gives CSRF
+// protection while allowing top-level navigations — frontend and backend sit
+// behind the same domain, so this is also a same-site request either way.
 const COOKIE_OPTIONS = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
+    secure: true,
     sameSite: 'lax',
     maxAge: 60 * 60 * 1000, // 1 hour — mirrors JWT TTL
     path: '/',

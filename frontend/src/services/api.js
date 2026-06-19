@@ -1,4 +1,7 @@
-const API_BASE = import.meta.env.VITE_API_URL
+// Relative path — resolves against whatever origin served the frontend.
+// In dev, Vite's server.proxy forwards /api to the backend (see vite.config.js).
+// In production, the gateway/nginx routes /api to the backend container.
+const API_BASE = '/api'
 
 export async function getClasses() {
     const response = await fetch(`${API_BASE}/classes`, { credentials: 'include' })

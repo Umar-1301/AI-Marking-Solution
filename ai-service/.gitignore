@@ -1,0 +1,4 @@
+# Local sizing-test artifacts — not part of the service.
+samples/
+*.csv
+chandra-response.json

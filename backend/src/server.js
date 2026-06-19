@@ -11,9 +11,13 @@ import authRoutes from './routes/auth.js'
 import classRoutes from './routes/classes.js'
 import lessonRoutes from './routes/lessons.js'
 import config from './config/index.js'
-import './db/schema.js'
+import './db/index.js' // opens the DB and builds the schema (via initSchema) at startup
 
 const app = express()
+
+// Trust the first hop proxy (Azure Container Apps ingress) so req.ip reflects
+// the real client IP via X-Forwarded-For, rather than the proxy's address.
+app.set('trust proxy', 1)
 
 app.use(helmet({
     contentSecurityPolicy: {
