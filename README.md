@@ -1,5 +1,55 @@
 # Teacher AI - Secure AI Marking Platform (Work in Progress)
 
+---
+
+## Current State — Baseline (Running in Azure with SQLite)
+
+This branch captures the **baseline**: the full application containerised and running in Azure Container Apps, backed by SQLite, **before** the migration to PostgreSQL begins. Below is a snapshot of the whole system as it stands.
+
+### What it is
+AIMIRA is a secure, AI-assisted marking platform for secondary-school English. A teacher signs in, manages classes/students, uploads a mark scheme, and the system OCRs it (with student-work marking to follow), all built to an enterprise security and cloud-deployment standard.
+
+### Architecture — three containerised services
+| Service | Tech | Port | Azure ingress | Role |
+|---|---|---|---|---|
+| **Frontend** | React (Vite build) served by **nginx** | 80 | **External** (public) | Serves the SPA **and** reverse-proxies `/api` to the backend |
+| **Backend** | Node/Express | 3001 | **Internal** | Auth, classes/students, lessons, OCR orchestration; embedded **SQLite** DB |
+| **AI service** | FastAPI + **Chandra** OCR model | 8000 | **Internal** | OCR on a **GPU** (NVIDIA T4) |
+
+### Request flow
+```
+Browser ──HTTPS──▶ Frontend (nginx, public)
+                     ├─ serves static React
+                     └─ /api ──▶ Backend (Express, internal)
+                                   └─ AI_SERVICE_URL ──▶ AI service / Chandra (FastAPI, internal, GPU)
+```
+The browser only ever talks to the frontend's domain; nginx proxies `/api` to the backend server-side, so everything is one origin to the browser (cookies stay same-site) and the backend/AI service are never publicly exposed.
+
+### Authentication
+- JWT issued on signup/login ([routes/auth.js](backend/src/routes/auth.js)), delivered as an **httpOnly cookie** (JS can't read it); a non-sensitive user object is kept in `localStorage` for the UI.
+- `authenticate.js` middleware verifies the cookie on protected routes (`/classes`, `/lessons`, `/upload`); `/auth` itself is unguarded.
+- Passwords: peppered (HMAC-SHA256) then **bcrypt** (cost 12, random salt). Emails: stored as a peppered **HMAC** (deterministic, never plaintext, lookup-able). Brute-force lockout, common-password blacklist, 72-byte guard.
+
+### Data layer
+- SQLite via **least-privilege accessors** (`teacherDb` / `lessonDb` / `classDb`) in [db/index.js](backend/src/db/index.js) — the only file that opens the connection or runs SQL. Schema self-initialises on boot ([db/schema.js](backend/src/db/schema.js)).
+- ⚠️ **Ephemeral**: container storage resets on restart and isn't shared across replicas, so the backend runs as a **single replica**. **PostgreSQL migration is the next change** to give persistent, multi-replica storage.
+
+### Azure deployment
+- Three images in **Azure Container Registry**; deployed as Container Apps.
+- Frontend external; backend + AI service internal (reached by internal FQDN).
+- Chandra on a **serverless GPU** workload profile (Consumption-GPU-NC8as-T4, 16 GB T4 VRAM), concurrency 1.
+- Secrets (`JWT_SECRET`, peppers) from **Key Vault**; nginx tuned for ACA ingress (Host/SNI routing + HTTP/1.1).
+
+### Security controls (summary)
+Parameterised SQL + least-privilege DB accessors · httpOnly + secure + sameSite cookies · bcrypt + pepper / HMAC emails · helmet CSP & security headers · file MIME + magic-byte + size validation · input sanitisation & prototype-pollution guards · rate limiting + login lockout · internal-only backend/AI ingress · non-root containers · secrets in Key Vault.
+
+### Known limitations / next steps
+- **SQLite is ephemeral** → migrating to Azure PostgreSQL (in progress).
+- Private **VNet** networking for the database (planned).
+- Student-work marking pipeline (beyond mark-scheme OCR) to be completed.
+
+---
+
 ## Local Setup
 
 ### 1. Install dependencies
