@@ -1,0 +1,116 @@
+# Klassio Infrastructure — Terraform Import Summary
+
+**Date:** 30 July 2026
+**Scope:** Bringing existing, manually-deployed Azure infrastructure under Terraform management ahead of subscription migration.
+
+---
+
+## Objective
+
+Klassio's Azure infrastructure was originally built manually (portal/CLI). This session codified that existing infrastructure into Terraform — mirroring live config into `.tf` files and linking real Azure objects into Terraform state — without creating, destroying, or modifying anything live, except where explicitly noted.
+
+The end goal: a fully portable `.tf` configuration that can be pointed at a **new, empty Azure subscription** to stand up an identical environment, once startup credits are approved.
+
+---
+
+## Resource Groups Covered
+
+| Resource Group | Contents | Status |
+|---|---|---|
+| `KlassioACR` | Container registry, role assignments | ✅ Fully imported |
+| `KlassioContainer` | Container Apps Environment, 3 container apps, managed certificates | ✅ Fully imported |
+| `KlassioDatabase` | SQL Server, database, TDE, firewall rules, auditing policies | ✅ Fully imported |
+| `KlassioKeyVault` | Key Vault (vault only — secret values deliberately excluded) | ✅ Fully imported |
+| `KlassioVnet` | 2 VNets, subnets, private DNS zones, private endpoint, NSG | ✅ Fully imported |
+
+---
+
+## Key Workflow Established
+
+1. **`aztfexport`** used to generate a rough draft of `.tf` config per resource group (run in a disposable scratch directory, never the main project directory).
+2. Draft config reviewed and tightened by hand — cross-referencing live state (or `az` CLI output) against the Terraform provider's argument reference, to explicitly set every relevant **Optional** attribute rather than relying on generated defaults.
+3. **Import method used:** declarative `import` blocks + `terraform plan -generate-config-out=...` (modern approach) for most resources; legacy `terraform import <address> <id>` used for the very first ACR resources before settling on the block-based method.
+4. Every import verified with `terraform plan` → confirmed **"No changes"** before considering a resource group complete.
+5. Completed `import` blocks removed from `imports.tf` once their job was done (they become permanent no-ops otherwise, but were cleaned up for tidiness).
+
+---
+
+## Notable Issues Encountered & Resolved
+
+### 1. `aztfexport` generates a minimal skeleton, not a full mirror
+Generated `.tf` only includes required/non-default fields. Optional attributes with real, non-default live values (e.g. `public_network_access_enabled`, `admin_enabled` on ACR) must be added manually by cross-referencing state/live values against the provider's Argument Reference docs.
+
+### 2. `role_definition_id` + `role_definition_name` conflict
+`generate-config-out` wrote both simultaneously on a role assignment — provider only accepts one. Resolved by keeping `role_definition_name` only (more readable) and removing the hardcoded `role_definition_id`.
+
+### 3. Near-miss: role definition edited in place instead of adding a new resource
+Attempting to add an `AcrPush` grant by editing the existing `AcrPull` role assignment's `role_definition_name` produced a plan showing **1 to destroy** — which would have deleted the working `AcrPull` grant. Caught before applying. Correct approach: each distinct role assignment (even for the same scope) needs its **own** separate `resource` block and `import` block, since each is a genuinely separate Azure object with its own GUID.
+
+### 4. Casing/value validation quirks
+- `secret.identity` on `azurerm_container_app` required exact `"System"` (capitalised), not `"system"` as generated — provider schema is case-sensitive even where Azure's own API may return lowercase.
+- Role assignment IDs and resource IDs generally: casing matters for Terraform's ID parser (`resourceGroups` vs `resourcegroups`) even though the underlying Azure API is case-insensitive. Manually reconstructed IDs (e.g. from CSV exports) are a common source of subtle casing mismatches — safer to pull IDs directly via `az ... --query id -o tsv` than hand-assemble them.
+
+### 5. `azurerm_container_app_environment` — workload_profile "must be replaced"
+A known rough edge: re-importing a CAE with `workload_profile` blocks can show a destructive replace plan if the blocks in `.tf` don't exactly match what's live (order, count, or fields). In this case, the live environment had both `Consumption` and `Flex` profiles; `Flex` had 0 apps assigned and was confirmed (via the Azure Portal) to be genuinely unused, so it was deliberately dropped from `.tf` rather than restored — a real, intentional infrastructure change (removes unused reserved capacity), not a bug.
+
+### 6. Empty-string validation failure
+`azurerm_mssql_server_vulnerability_assessment.storage_container_path = ""` — Required field, provider rejects empty string. This resource (and its parent `security_alert_policy`, both `Disabled`/unconfigured live) was ultimately deliberately **excluded** from Terraform management, since it represented an inert, never-properly-configured feature rather than real infrastructure worth mirroring as-is. Flagged as a future pre-launch task (SQL auditing + threat detection currently fully disabled) rather than solved in this session.
+
+---
+
+## Security-Relevant Decisions Made This Session
+
+### Confirmed: SQL Server is Entra-only authenticated
+Verified live via `az sql server ad-only-auth get` → `azureAdOnlyAuthentication: true`. The `administrator_login` field visible in imported config is legacy/inert metadata — no live SQL password authentication path exists. Explicitly reflected in `.tf` via `azuread_authentication_only = true` on the `azuread_administrator` block, so the enforcement decision is documented in code, not just live config.
+
+### Key Vault secret values deliberately excluded from Terraform entirely
+**Decision:** Terraform manages the Key Vault itself (SKU, RBAC, network rules) but **never** touches secret values (`databaseurl`, `jwtsecret`, `emailpepper`, `passwordpepper`).
+
+Rationale: any Terraform read of a real secret value writes that value into `.tfstate` in plaintext, permanently, regardless of `.tf` config. A `sensitive = true` variable + `ignore_changes = [value]` pattern was evaluated but ultimately rejected as insufficient — it stops Terraform from *overwriting* a value, but does not stop the value from being captured in state during import in the first place.
+
+**Final approach:** secret **rotation and creation happen entirely outside Terraform** (manual `az keyvault secret set`, or a future dedicated rotation process). Terraform has no `azurerm_key_vault_secret` resources at all. `terraform state list` should be checked periodically to confirm no secret values have been inadvertently captured.
+
+### Confirmed via live test: service principal credential exposure model
+Test performed: authenticated as the `klassio-terraform-sp` service principal directly (via `ARM_CLIENT_ID`/`ARM_CLIENT_SECRET`/`ARM_TENANT_ID`) and successfully read a live Key Vault secret value, with no MFA or interactive approval step.
+
+**Finding:** SP credentials function as a bearer token — full compromise of `ARM_CLIENT_SECRET` grants immediate, unattended access to whatever the SP is scoped to, with no secondary authentication barrier. This is expected/standard for automation identities, but underscores that the SP's own credential must be protected carefully (never logged, never committed, ideally rotated periodically; Workload Identity Federation is a stronger long-term alternative that removes the standing-secret risk entirely).
+
+**Reassuring finding:** the `databaseurl` secret value itself, even if exposed, is **not sufficient alone** to compromise the database — the connection string uses `Authentication=Active Directory Default`, meaning a valid Entra token is still required to actually connect. This validates the Entra-only auth design as genuine defence-in-depth, not just a checkbox.
+
+**Follow-up action:** confirm whether any secret values were captured in local `.tfstate` from the SP-authenticated test session, and run `terraform state rm` on any `azurerm_key_vault_secret` resources if found (none should exist under the final approach above, but worth a one-time check).
+
+### Terraform state handling — local, not remote, and deliberately so
+Considered and explicitly declined a remote backend (e.g. Azure Storage) for Terraform state. Reasoning: remote state solves problems specific to multi-operator or CI/CD workflows (state locking, ephemeral runners) — neither applies currently (solo operator, no pipeline yet). Remote state would introduce new configuration surface (storage account access model, network exposure) without a corresponding problem it solves right now. Local state remains appropriate provided:
+- `*.tfstate` and `*.tfstate.backup` are `.gitignore`d (never intended for version control)
+- Full-disk encryption (FileVault) is enabled on the local machine
+- Some periodic backup of the state file exists outside of git
+
+**Revisit trigger:** the moment a second person (e.g. Andeep) needs to run Terraform, or any CI/CD pipeline is introduced to apply changes automatically.
+
+---
+
+## Outstanding Items / Backlog
+
+- [ ] SQL Server: extended auditing, Microsoft support auditing, and vulnerability assessment are all currently **disabled/unconfigured live** — worth enabling properly before formal piloting, given DfE/GDPR data-handling expectations. Requires standing up a storage container for scan results before `azurerm_mssql_server_vulnerability_assessment` can be reintroduced.
+- [ ] `AllowAllWindowsAzureIps` firewall rule (0.0.0.0–0.0.0.0) on SQL Server — broad by design/Azure convention, but worth a deliberate keep/remove decision given private endpoint is already in place for SQL.
+- [ ] Confirm no `azurerm_key_vault_secret` resources exist in local state following the SP credential test earlier in this session.
+- [ ] Full replication dry-run: point this `.tf` config at a fresh, empty subscription once startup credits are approved, and confirm it stands up a working environment end-to-end.
+- [ ] Design-gate review for student file upload / AI marking pipeline (ownership chain, prompt injection defence, malware quarantine, secure download URLs, atomic deletion) — separate track, not covered in this session.
+
+---
+
+## File Structure (Main Terraform Directory)
+
+```
+environments/dev/
+├── providers.tf              # azurerm provider config, no hardcoded subscription
+├── acr.tf                    # Container registry
+├── role_assignments.tf       # ACR role assignments (pull, push)
+├── cae.tf                    # Container Apps Environment + 3 container apps + certs
+├── sql.tf                    # SQL server, database, TDE, firewall rules, auditing
+├── akv.tf                    # Key Vault (vault only, no secret resources)
+├── vnet.tf                   # VNets, subnets, private DNS zones, private endpoint, NSG
+├── imports.tf                # Scratch file for in-progress import blocks (cleaned after use)
+├── terraform.tfstate         # LOCAL ONLY — gitignored, contains real resource attributes
+└── .gitignore                # Excludes *.tfstate, *.tfstate.backup, .terraform/
+```
