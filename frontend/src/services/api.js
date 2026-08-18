@@ -110,6 +110,17 @@ export async function selectQuestion(lessonId, selectedQuestionIndex) {
     return data
 }
 
+// Presence-only check — true/false, never the result content. Used to
+// restore tick state on page load without pulling the full grade payload.
+export async function getResultPresence(lessonId, studentId) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/result_presence/${studentId}`, {
+        credentials: 'include',
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to check result status')
+    return data.present
+}
+
 export async function getMarkingResults(lessonId) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/results`, { credentials: 'include' })
     const data = await response.json()

@@ -48,7 +48,7 @@ services:
       ACCEPT_EULA: "Y"
       MSSQL_PID: "Developer"
       # Matches backend/.env's SQL_PASSWORD — local-dev only, never used in Azure.
-      MSSQL_SA_PASSWORD: "AimiraLocalDev_2026!"
+      MSSQL_SA_PASSWORD: "AimiraDevingAbout123!"
     ports:
       - "1433:1433"
     volumes:

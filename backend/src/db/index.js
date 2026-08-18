@@ -318,6 +318,27 @@ export const markingDb = {
             ])
         }),
 
+    // Lightweight true/false check for whether a result already exists for
+    // this student in this lesson — a student can belong to multiple
+    // lessons, so both ids are required to identify the right row. Scoped
+    // to the teacher's own classes, same join as getResults/validateStudent.
+    // Only checks presence of student_grade, never returns its contents.
+    checkResultPresence: async (studentId, lessonId, teacherId, e = pool) => {
+        const result = (await exec(e, `
+            SELECT mr.student_grade
+            FROM dbo.marking_results AS mr
+            JOIN dbo.lessons AS l ON l.id = mr.lesson_id
+            JOIN dbo.classes AS c ON c.id = l.class_id
+            WHERE mr.lesson_id = @lessonId AND mr.student_id = @studentId AND c.teacher_id = @teacherId
+        `, [
+            intParam('lessonId', lessonId),
+            intParam('studentId', studentId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0]
+
+        return result?.student_grade != null
+    },
+
     // Fetch all marking results for a lesson, scoped to the teacher's own classes.
     getResults: async (lessonId, teacherId, e = pool) =>
         (await exec(e, `

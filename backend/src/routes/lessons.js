@@ -248,6 +248,22 @@ router.get('/:lessonId/results', async (req, res, next) => {
     }
 })
 
+// GET /lessons/:lessonId/result_presence/:studentId — true/false check for
+// whether a marking result already exists for this student in this lesson.
+// Deliberately returns presence only, never the result itself — kept
+// separate from GET /results so pages that only need to restore tick state
+// (e.g. StudentMarking on refresh) don't have to pull the full grade payload.
+router.get('/:lessonId/result_presence/:studentId', async (req, res, next) => {
+    try {
+        const lessonId  = parseInt(req.params.lessonId)
+        const studentId = parseInt(req.params.studentId)
+        const present   = await markingDb.checkResultPresence(studentId, lessonId, req.user.id)
+        res.json({ present })
+    } catch (err) {
+        next(err)
+    }
+})
+
 // POST /lessons/:lessonId/mark-student — upload one student's work, get AI
 // marking against the already-extracted scheme, persist the result.
 router.post('/:lessonId/mark-student',

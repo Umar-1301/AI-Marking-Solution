@@ -1,11 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   getLesson, getStudents, getLessonOcr,
-  getMarkingResults, submitStudentWork,
+  getResultPresence, submitStudentWork,
 } from '../services/api'
-import ResultCard from '../components/ResultCard'
-import AnnotatedEssay from '../components/AnnotatedEssay'
 
 const CIRCUMFERENCE = 2 * Math.PI * 26 // r=26 → ≈163.4
 
@@ -45,9 +43,10 @@ function StudentMarking() {
   const [ocrError, setOcrError] = useState(null)
   const [notFound, setNotFound] = useState(false)
 
-  // { [studentId]: { status: 'marking'|'done'|'error', result?, error? } }
+  // { [studentId]: { status: 'marking'|'done'|'error', error? } }
+  // In-memory only, for this page visit — the actual result is persisted
+  // server-side and intentionally not read back here. See StudentFeedback.
   const [markStates, setMarkStates] = useState({})
-  const [expanded,   setExpanded]   = useState({})
 
   const fileInputRef   = useRef(null)
   const pendingStudent = useRef(null)
@@ -73,29 +72,32 @@ function StudentMarking() {
       .catch(err => setOcrError(err.message))
   }, [lessonId])
 
-  // Single source of truth for anything displayed as a result: always a read
-  // from marking_results, never the API response of whichever request just
-  // finished. Merges into existing state rather than replacing it wholesale,
-  // so it can't clobber another student's still-in-flight 'marking' status —
-  // getMarkingResults only ever returns rows that have actually been
-  // persisted, so a student mid-upload elsewhere just wouldn't be in it yet.
-  const refreshResults = useCallback(async () => {
-    const results = await getMarkingResults(lessonId)
-    setMarkStates(prev => {
-      const next = { ...prev }
-      for (const r of results) {
-        next[r.studentId] = { status: 'done', result: r.result }
-      }
-      return next
-    })
-  }, [lessonId])
-
-  // Load any marking results already persisted for this lesson, so a
-  // refresh (or coming back later) shows existing marks, not a blank list.
+  // On load/refresh, restore tick state by checking presence only — never
+  // fetches the result itself (see result_presence route). Guards against
+  // clobbering a student already mid-upload in this same tab.
   useEffect(() => {
-    if (!lessonId) return
-    refreshResults().catch(() => {})
-  }, [lessonId, refreshResults])
+    if (!lessonId || students.length === 0) return
+    let cancelled = false
+
+    Promise.all(students.map(s =>
+      getResultPresence(lessonId, s.id)
+        .then(present => ({ studentId: s.id, present }))
+        .catch(() => ({ studentId: s.id, present: false }))
+    )).then(checks => {
+      if (cancelled) return
+      setMarkStates(prev => {
+        const next = { ...prev }
+        for (const { studentId, present } of checks) {
+          if (present && next[studentId]?.status !== 'marking') {
+            next[studentId] = { status: 'done' }
+          }
+        }
+        return next
+      })
+    })
+
+    return () => { cancelled = true }
+  }, [lessonId, students])
 
   if (notFound) {
     navigate('/', { replace: true })
@@ -118,19 +120,14 @@ function StudentMarking() {
     setMarkStates(prev => ({ ...prev, [studentId]: { status: 'marking' } }))
 
     try {
-      // Plain request now, not streamed — its response is only used to know
-      // marking finished (or failed). What's displayed comes from
-      // refreshResults(), a fresh read of what actually got persisted.
+      // The marked result is persisted server-side and intentionally not
+      // read back here — { ok: true } is the only signal this page needs.
       await submitStudentWork(lessonId, studentId, file)
-      await refreshResults()
-      setExpanded(prev => ({ ...prev, [studentId]: true }))
+      setMarkStates(prev => ({ ...prev, [studentId]: { status: 'done' } }))
     } catch (err) {
       setMarkStates(prev => ({ ...prev, [studentId]: { status: 'error', error: err.message } }))
     }
   }
-
-  const toggleExpanded = (studentId) =>
-    setExpanded(prev => ({ ...prev, [studentId]: !prev[studentId] }))
 
   return (
     <div className="page">
@@ -178,9 +175,8 @@ function StudentMarking() {
           <p className="student-marking-empty">Loading students…</p>
         ) : (
           students.map(s => {
-            const st         = markStates[s.id]
-            const status     = st?.status
-            const isExpanded = expanded[s.id]
+            const st     = markStates[s.id]
+            const status = st?.status
 
             return (
               <div key={s.id} className="student-marking-row">
@@ -190,17 +186,16 @@ function StudentMarking() {
                   {status === 'marking' ? (
                     <span className="student-marking-feedback-placeholder">Marking…</span>
                   ) : status === 'done' ? (
-                    <div className="student-result-row">
-                      <span className="student-result-score">
-                        {st.result.score}/{st.result.maxScore}
-                      </span>
-                      <button className="student-expand-btn" onClick={() => toggleExpanded(s.id)}>
-                        {isExpanded ? 'Hide' : 'View feedback'}
-                      </button>
-                      <button className="student-remark-btn" onClick={() => handleUploadClick(s.id)}>
-                        Re-mark
-                      </button>
-                    </div>
+                    <button
+                      className="student-marked-tick"
+                      onClick={() => handleUploadClick(s.id)}
+                      aria-label="Marked — click to re-mark"
+                      title="Marked — click to re-mark"
+                    >
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                    </button>
                   ) : status === 'error' ? (
                     <div className="student-result-row">
                       <span className="student-mark-error">{st.error || 'Marking failed'}</span>
@@ -214,23 +209,19 @@ function StudentMarking() {
                     </button>
                   )}
                 </div>
-
-                {status === 'done' && isExpanded && (
-                  <div className="student-result-expanded">
-                    <ResultCard result={st.result} />
-                    {st.result.studentOcrText && st.result.annotations?.length > 0 && (
-                      <AnnotatedEssay
-                        text={st.result.studentOcrText}
-                        annotations={st.result.annotations}
-                      />
-                    )}
-                  </div>
-                )}
               </div>
             )
           })
         )}
       </div>
+
+      <button
+        className="marking-submit-btn"
+        disabled={markedCount === 0}
+        onClick={() => navigate(`/student-feedback/${lessonId}`)}
+      >
+        Submit
+      </button>
     </div>
   )
 }
