@@ -1,11 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getClasses, getLessons, createLesson } from '../services/api'
-
-// "Previous mark schemes" / "Previous marking sessions" — kept but disabled.
-// Andeep's version removed this feature entirely; we're retaining the code
-// rather than deleting it, to be properly reworked and re-enabled later.
-const SHOW_LESSON_HISTORY = false
+import { getClasses, getLessons, createLesson, reuseMarkScheme } from '../services/api'
 
 const PROGRESS = {
   security_pass:  10,
@@ -65,7 +60,7 @@ function Home() {
 
   useEffect(() => {
     getClasses().then(setClasses).catch(() => {})
-    if (SHOW_LESSON_HISTORY) getLessons().then(setLessons).catch(() => {})
+    getLessons().then(setLessons).catch(() => {})
   }, [])
 
   const handleFileChange = (e) => {
@@ -112,7 +107,20 @@ function Home() {
     if (!markScheme && !selectedLesson)     return setError('Please upload a mark scheme or select a previous one.')
 
     if (selectedLesson) {
-      navigate(`/student-marking/${selectedLesson.id}`)
+      setLoading(true)
+      setError(null)
+      try {
+        const result = await reuseMarkScheme(selectedLesson.id, selectedClassId)
+        if (result.has_multiple_questions) {
+          navigate(`/select-question/${result.id}`)
+        } else {
+          navigate(`/student-marking/${result.id}`)
+        }
+      } catch (err) {
+        setError(err.message)
+      } finally {
+        setLoading(false)
+      }
       return
     }
 
@@ -197,7 +205,7 @@ function Home() {
             </div>
           </section>
 
-          {SHOW_LESSON_HISTORY && lessons.length > 0 && (
+          {lessons.length > 0 && (
             <>
               <CollapsiblePanel
                 title="Previous mark schemes"
@@ -228,7 +236,7 @@ function Home() {
                     key={l.id}
                     type="button"
                     className="home-panel-card"
-                    onClick={() => navigate(`/student-marking/${l.id}`)}
+                    onClick={() => navigate(`/student-feedback/${l.id}`)}
                   >
                     <span className="home-panel-card-title">{l.lesson_title}</span>
                     <span className="home-panel-card-sub">{l.class_name}</span>

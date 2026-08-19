@@ -150,6 +150,19 @@ const SQL_LESSON_OCR_TEXT = `
     WHERE l.id = @lessonId AND c.teacher_id = @teacherId
 `
 
+// Everything needed to clone a lesson's already-extracted mark scheme into a
+// brand-new lesson, without touching students or marking_results — backs
+// POST /:sourceLessonId/reuse, which starts a genuinely new session rather
+// than resuming the old one.
+const SQL_LESSON_SCHEME_FOR_REUSE = `
+    SELECT l.lesson_title, l.mark_scheme_file_name, l.mark_scheme_mime_type,
+           t.ocr_text, t.structured_scheme
+    FROM dbo.teacher_ocr AS t
+    JOIN dbo.lessons AS l ON t.lesson_id = l.id
+    JOIN dbo.classes AS c ON l.class_id = c.id
+    WHERE l.id = @lessonId AND c.teacher_id = @teacherId
+`
+
 export const lessonDb = {
     listLessons: async (teacherId, e = pool) =>
         (await exec(e, SQL_LIST_LESSONS, [
@@ -170,6 +183,12 @@ export const lessonDb = {
 
     getOcrText: async (lessonId, teacherId, e = pool) =>
         (await exec(e, SQL_LESSON_OCR_TEXT, [
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
+
+    getSchemeForReuse: async (lessonId, teacherId, e = pool) =>
+        (await exec(e, SQL_LESSON_SCHEME_FOR_REUSE, [
             intParam('lessonId', lessonId),
             intParam('teacherId', teacherId),
         ])).recordset[0],

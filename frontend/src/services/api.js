@@ -98,6 +98,22 @@ export async function createLesson(classId, markSchemeFile, onEvent = () => {}) 
     return result
 }
 
+// Clones a previous lesson's already-extracted mark scheme into a new lesson
+// for the given class — no re-OCR. Returns the same shape createLesson's
+// streamed 'done' event does, so callers can branch on has_multiple_questions
+// identically either way.
+export async function reuseMarkScheme(sourceLessonId, classId) {
+    const response = await fetch(`${API_BASE}/lessons/${sourceLessonId}/reuse`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ classId }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to reuse mark scheme')
+    return data
+}
+
 export async function selectQuestion(lessonId, selectedQuestionIndex) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/select-question`, {
         method:  'PATCH',

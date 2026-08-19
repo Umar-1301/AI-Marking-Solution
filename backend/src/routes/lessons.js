@@ -133,6 +133,51 @@ router.patch('/:id/select-question', async (req, res, next) => {
     }
 })
 
+// POST /lessons/:sourceLessonId/reuse — clone a previous lesson's already-
+// extracted mark scheme into a brand-new lesson for the given class. No
+// getOcrFromAI() call — the text is read back from teacher_ocr rather than
+// re-OCR'd. Only ever touches lessons/teacher_ocr (source lookup) and
+// classes (ownership checks) — never students or marking_results, since
+// this creates a new session rather than resuming the old one.
+router.post('/:sourceLessonId/reuse', async (req, res, next) => {
+    try {
+        const classId = parseInt(req.body.classId)
+        if (!classId) return res.status(400).json({ error: 'Class is required' })
+
+        const cls = await lessonDb.findClass(classId, req.user.id)
+        if (!cls) return res.status(404).json({ error: 'Class not found' })
+
+        const source = await lessonDb.getSchemeForReuse(req.params.sourceLessonId, req.user.id)
+        if (!source) return res.status(404).json({ error: 'Lesson not found' })
+
+        const lessonId = await lessonDb.createLesson(
+            source.lesson_title,
+            classId,
+            source.mark_scheme_file_name,
+            source.mark_scheme_mime_type,
+            source.ocr_text,
+            source.structured_scheme
+        )
+
+        // Same has_multiple_questions computation POST / uses, so the
+        // frontend can branch on this response identically either way.
+        let parsedScheme = {}
+        try { parsedScheme = source.structured_scheme ? JSON.parse(source.structured_scheme) : {} }
+        catch { parsedScheme = {} }
+        const hasMultipleQuestions = parsedScheme.paper_type === 'multi'
+            && (parsedScheme.questions ?? []).length > 1
+
+        res.json({
+            id: lessonId,
+            class_id: classId,
+            class_name: cls.class_name,
+            has_multiple_questions: hasMultipleQuestions,
+        })
+    } catch (err) {
+        next(err)
+    }
+})
+
 // POST /lessons — security-check the mark scheme, OCR it, store the result.
 // Streams newline-delimited JSON so the frontend can drive a progress bar.
 router.post('/',
