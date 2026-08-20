@@ -1,3 +1,9 @@
+# Superpowers brainstorming companion — local mockup/session scratch, never committed
+.superpowers/
+
+# Local Claude Code project instructions — not committed
+CLAUDE.md
+
 # Dependencies
 **/node_modules/
 **/npm-debug.log*

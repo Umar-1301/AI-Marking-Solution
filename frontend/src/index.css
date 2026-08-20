@@ -5,35 +5,47 @@
 }
 
 :root {
-  --bg: #f8fafc;
-  --surface: #ffffff;
-  --card: #ffffff;
-  --card-raised: #ffffff;
-  --border: #e2e8f0;
-  --border-hover: #cbd5e1;
-  --accent: #22c55e;
-  --accent-light: #4ade80;
-  --accent-2: #16a34a;
-  --accent-gradient: linear-gradient(135deg, #16a34a 0%, #22c55e 100%);
-  --accent-glow: rgba(34, 197, 94, 0.22);
-  --accent-soft: rgba(34, 197, 94, 0.10);
-  --text-primary: #0f172a;
-  --text-secondary: #475569;
-  --text-muted: #94a3b8;
-  --success: #22c55e;
-  --success-bg: rgba(34, 197, 94, 0.08);
-  --success-border: rgba(34, 197, 94, 0.25);
-  --error: #ef4444;
-  --error-bg: rgba(239, 68, 68, 0.07);
-  --error-border: rgba(239, 68, 68, 0.3);
-  --warning: #f59e0b;
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04);
-  --shadow-md: 0 4px 16px rgba(15, 23, 42, 0.06);
-  --shadow-lg: 0 24px 48px rgba(15, 23, 42, 0.08);
+  --bg: #1a1a1d;
+  --surface: #232326;
+  --card: #232326;
+  --card-raised: #2a2a2e;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-hover: rgba(255, 255, 255, 0.18);
+
+  /* Hot orange accent. accent-2 is deliberately LIGHTER than accent here
+     (inverted from a light-theme scale) since accent-2 is used as a text
+     color in a few places — on a dark background, lighter reads, not darker. */
+  --accent: #ff5a1f;
+  --accent-light: #ffb37a;
+  --accent-2: #ff8a4d;
+  --accent-gradient: linear-gradient(135deg, #e8450a 0%, #ff7a33 100%);
+  --accent-glow: rgba(255, 90, 31, 0.35);
+  --accent-soft: rgba(255, 90, 31, 0.14);
+
+  --text-primary: #ffffff;
+  --text-secondary: #c7c7cc;
+  --text-muted: #86868b;
+
+  /* Success/error/warning kept as their own hues, not the accent orange —
+     functional colour must stay distinct from brand colour (CLAUDE.md §6) —
+     just brightened so they still read against a dark background. */
+  --success: #34d399;
+  --success-bg: rgba(52, 211, 153, 0.12);
+  --success-border: rgba(52, 211, 153, 0.35);
+  --error: #f87171;
+  --error-bg: rgba(248, 113, 113, 0.1);
+  --error-border: rgba(248, 113, 113, 0.3);
+  --warning: #fbbf24;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 20px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.5);
 }
 
+/* Typography — Fraunces (select headings) + Sora (body/UI), app-wide.
+   Loaded via <link> in index.html. */
 body {
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Sora', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   background: var(--bg);
   color: var(--text-primary);
   min-height: 100vh;
@@ -42,14 +54,20 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+.home-title,
+.home-action-title,
+.home-navitem-label {
+  font-family: 'Fraunces', Georgia, serif;
+}
+
 /* Subtle grid background */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
   background-image:
-    linear-gradient(rgba(15, 23, 42, 0.025) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(15, 23, 42, 0.025) 1px, transparent 1px);
+    linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
   background-size: 60px 60px;
   pointer-events: none;
   z-index: 0;
@@ -64,7 +82,7 @@ body::after {
   transform: translateX(-50%);
   width: 900px;
   height: 500px;
-  background: radial-gradient(ellipse, rgba(34, 197, 94, 0.08) 0%, transparent 70%);
+  background: radial-gradient(ellipse, rgba(255, 90, 31, 0.16) 0%, transparent 70%);
   pointer-events: none;
   z-index: 0;
 }
@@ -74,6 +92,44 @@ body::after {
   z-index: 1;
 }
 
+/* Named separately from the default document-wide "root" capture, and
+   scoped to only the routed page content (not #root as a whole) — this is
+   what keeps the fixed body::before/::after decorative layers AND the
+   Header (logo, nav links, username, sign out) static and untouched, so
+   only the actual page content scales/fades. See the wrapping div around
+   <Routes> in App.jsx. */
+.route-transition-target {
+  view-transition-name: page;
+}
+
+/* Home <-> Create Class only — see the manual document.startViewTransition()
+   click handler on those two NavLinks in App.jsx. Every other navigation in
+   the app doesn't opt in to a view transition at all, so this simply never
+   fires for them. */
+::view-transition-old(page) {
+  animation: kl-page-scale-out 0.4s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+::view-transition-new(page) {
+  animation: kl-page-scale-in 0.4s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@keyframes kl-page-scale-out {
+  to { opacity: 0; transform: scale(0.97); }
+}
+
+@keyframes kl-page-scale-in {
+  from { opacity: 0; transform: scale(0.97); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(page),
+  ::view-transition-old(page),
+  ::view-transition-new(page) {
+    animation: none !important;
+  }
+}
+
 /* ─── Header ─────────────────────────────────────── */
 
 .header {
@@ -81,7 +137,7 @@ body::after {
   top: 0;
   z-index: 50;
   border-bottom: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.85);
+  background: rgba(26, 26, 29, 0.85);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
 }
@@ -134,8 +190,8 @@ body::after {
   text-transform: uppercase;
   padding: 2px 7px;
   border-radius: 99px;
-  background: rgba(34, 197, 94, 0.15);
-  border: 1px solid rgba(34, 197, 94, 0.35);
+  background: rgba(255, 90, 31, 0.15);
+  border: 1px solid rgba(255, 90, 31, 0.4);
   color: var(--accent-light);
 }
 
@@ -586,13 +642,46 @@ body::after {
   }
 }
 
-/* Left column — wrapper + marketing */
+/* ─── Home shell: sidebar nav rail + main pane ───── */
+/* Replaces the old .home-grid (marketing+panels / action-card) split for
+   Home specifically. .home-grid itself is left untouched — SelectQuestion.jsx
+   still uses it. */
 
-.home-left-col {
+.home-shell {
+  display: grid;
+  grid-template-columns: 230px 1fr;
+  gap: 40px;
+  align-items: start;
+}
+
+@media (max-width: 880px) {
+  .home-shell {
+    grid-template-columns: 1fr;
+    gap: 28px;
+  }
+}
+
+.home-sidebar {
+  border-right: 1px solid var(--border);
+  padding-right: 8px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding-top: 24px;
+}
+
+@media (max-width: 880px) {
+  .home-sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: 12px;
+  }
+}
+
+.home-main {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding-top: 8px;
   min-width: 0;
 }
 
@@ -602,83 +691,106 @@ body::after {
   gap: 24px;
 }
 
-/* ─── Collapsible panels ─────────────────────────── */
-
-.home-panel {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-  background: var(--surface);
+/* Only when the action card sits in the new Home shell — the bare
+   .home-action-card class is shared with SelectQuestion.jsx and must not
+   be constrained here. Stretches to the main pane's full width now that
+   the sidebar owns its own column, rather than sitting narrow beside empty
+   space. */
+.home-main .home-action-card {
+  width: 100%;
 }
 
-.home-panel-header {
+/* ─── Sidebar nav rail items ──────────────────────── */
+
+.home-navitem-head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   width: 100%;
-  padding: 14px 16px;
+  padding: 10px 14px;
   background: none;
   border: none;
+  border-left: 2px solid transparent;
   cursor: pointer;
   text-align: left;
+  transition: background 0.15s, border-color 0.15s;
 }
 
-.home-panel-header:hover {
-  background: var(--accent-soft, #f0fdf4);
+.home-navitem-head:hover {
+  background: var(--accent-soft);
 }
 
-.home-panel-title {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--text);
+.home-navitem-head.is-expanded {
+  background: var(--accent-soft);
+  border-left-color: var(--accent);
 }
 
-.home-panel-icon {
+.home-navitem-icon {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--accent-soft);
   color: var(--accent);
   flex-shrink: 0;
-  transition: transform 0.3s ease;
+  transition: background 0.15s, color 0.15s;
 }
 
-.home-panel-icon svg {
-  width: 16px;
-  height: 16px;
+.home-navitem-icon svg {
+  width: 14px;
+  height: 14px;
 }
 
-.home-panel-icon.is-open {
-  transform: rotate(45deg);
+.home-navitem-head.is-expanded .home-navitem-icon {
+  background: var(--accent);
+  color: #fff;
 }
 
-.home-panel-body {
+.home-navitem-label {
+  flex: 1;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.home-navitem-chevron {
+  display: flex;
+  color: var(--text-muted);
+  transition: transform 0.2s ease, color 0.15s;
+}
+
+.home-navitem-chevron svg {
+  width: 14px;
+  height: 14px;
+}
+
+.home-navitem-chevron.is-expanded {
+  transform: rotate(90deg);
+  color: var(--accent);
+}
+
+.home-navitem-body {
   max-height: 0;
   overflow: hidden;
+  padding-left: 44px;
   transition: max-height 0.35s ease;
 }
 
-.home-panel-body.is-open {
-  max-height: 380px;
+.home-navitem-body.is-expanded {
+  max-height: 420px;
+  overflow-y: auto;
 }
 
-.home-panel-cards {
-  display: grid;
-  grid-template-rows: repeat(3, auto);
-  grid-auto-flow: column;
-  grid-auto-columns: 160px;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 4px 12px 14px;
-}
-
-.home-panel-card {
+.home-navitem-card {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 3px;
-  padding: 10px 12px;
+  gap: 2px;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 6px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -687,36 +799,42 @@ body::after {
   transition: border-color 0.15s, background 0.15s;
 }
 
-.home-panel-card:hover {
+.home-navitem-card:hover {
   border-color: var(--accent);
-  background: var(--accent-soft, #f0fdf4);
+  background: var(--accent-soft);
 }
 
-.home-panel-card.is-selected {
+.home-navitem-card.is-selected {
   border-color: var(--accent);
-  background: var(--accent-soft, #f0fdf4);
+  background: var(--accent-soft);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 
-.home-panel-card-title {
-  font-size: 0.8rem;
+.home-navitem-card-title {
+  font-size: 0.78rem;
   font-weight: 600;
-  color: var(--text);
+  color: var(--text-primary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 136px;
+  max-width: 100%;
 }
 
-.home-panel-card-sub {
-  font-size: 0.73rem;
+.home-navitem-card-sub {
+  font-size: 0.7rem;
   color: var(--accent);
   font-weight: 500;
 }
 
-.home-panel-card-date {
-  font-size: 0.7rem;
+.home-navitem-card-date {
+  font-size: 0.68rem;
   color: var(--text-muted);
+}
+
+.home-navitem-empty {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  padding: 6px 0 10px;
 }
 
 /* ─── Selected mark scheme chip ──────────────────── */
@@ -774,7 +892,10 @@ body::after {
   align-self: flex-start;
   padding: 8px 14px;
   background: var(--accent-soft);
-  border: 1px solid var(--success-border);
+  /* Was var(--success-border) — only worked because success and accent used
+     to be the same green hue. This pill is a brand/decorative element, not
+     a success indicator, so it points at the accent directly now. */
+  border: 1px solid rgba(255, 90, 31, 0.4);
   border-radius: 999px;
   color: var(--accent-2);
   font-size: 0.78rem;
@@ -806,38 +927,6 @@ body::after {
   color: var(--text-secondary);
   max-width: 520px;
   margin: 0;
-}
-
-.home-features {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 22px;
-  margin-top: 8px;
-}
-
-.home-feature {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text-secondary);
-  font-size: 0.9rem;
-  font-weight: 500;
-}
-
-.home-feature-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--accent-soft);
-  color: var(--accent);
-}
-
-.home-feature-icon svg {
-  width: 16px;
-  height: 16px;
 }
 
 /* Right column — action card */
@@ -1121,81 +1210,112 @@ body::after {
 
 /* ─── Previous sessions ──────────────────────────── */
 
-/* Process strip at the bottom */
+/* Process track — heading above number, numbers connected by a continuous
+   orange line. Named grid-areas (not DOM order) place each heading/node,
+   so the mobile breakpoint can restack per-step without reordering markup.
+   No card container — sits directly on the page. */
 
-.home-process-strip {
-  margin-top: 56px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 28px 32px;
+.home-process-track {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-areas:
+    "h1 h2 h3"
+    "b1 b2 b3";
+  column-gap: 28px;
+  row-gap: 8px;
+  margin-bottom: 4px;
+}
+
+.home-process-heading {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+/* Text-align matches each node's own justify-content below (b1 sits at its
+   column's left edge, b2 centred, b3 at its right edge) so each heading
+   centres directly over its own number, not just over its grid column. */
+.home-process-h1 { grid-area: h1; text-align: left; }
+.home-process-h2 { grid-area: h2; text-align: center; }
+.home-process-h3 { grid-area: h3; text-align: right; }
+
+.home-process-node {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  box-shadow: var(--shadow-md);
+  justify-content: center;
+  padding: 6px 0;
 }
 
-.home-process-step {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  flex: 1;
-  min-width: 0;
+/* Nudged in from the true column edge so the badge sits under the visual
+   centre of its (shorter, edge-anchored) heading text above it, rather
+   than under the heading's flush-left/right starting edge. */
+.home-process-b1 { grid-area: b1; justify-content: flex-start; margin-left: 22px; }
+.home-process-b2 { grid-area: b2; }
+.home-process-b3 { grid-area: b3; justify-content: flex-end; margin-right: 22px; }
+
+/* The connecting line: each node draws a half-line to its own left/right
+   edge — first node hides its left half, last node hides its right half,
+   so the visible result is one continuous line regardless of column width. */
+.home-process-node::before,
+.home-process-node::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  height: 2px;
+  width: 50%;
+  background: var(--accent);
+  opacity: 0.5;
+  transform: translateY(-50%);
 }
+
+.home-process-node::before { left: 0; }
+.home-process-node::after  { right: 0; }
+.home-process-b1::before   { display: none; }
+.home-process-b3::after    { display: none; }
 
 .home-process-badge {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
-  background: var(--accent-soft);
-  color: var(--accent);
+  background: var(--accent);
+  color: #fff;
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: 0.88rem;
   flex-shrink: 0;
 }
 
-.home-process-body h3 {
-  font-size: 0.98rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 2px;
-}
-
-.home-process-body p {
-  font-size: 0.85rem;
-  color: var(--text-secondary);
-  margin: 0;
-  line-height: 1.45;
-}
-
-.home-process-arrow {
-  flex: 0 0 64px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--accent);
-  opacity: 0.5;
-}
-
-.home-process-arrow svg {
-  width: 64px;
-  height: 16px;
-}
-
 @media (max-width: 880px) {
-  .home-process-strip {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 20px;
+  .home-process-track {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "h1" "b1"
+      "h2" "b2"
+      "h3" "b3";
+    row-gap: 4px;
   }
 
-  .home-process-arrow {
-    transform: rotate(90deg);
-    flex: 0 0 auto;
+  .home-process-heading { text-align: left !important; }
+
+  .home-process-node { padding: 4px 0; justify-content: flex-start !important; }
+
+  /* A horizontal line makes no sense in a single column — drop it here
+     rather than attempting a vertical rotation of the same technique. */
+  .home-process-node::before,
+  .home-process-node::after {
+    display: none;
+  }
+
+  .home-process-b1,
+  .home-process-b2,
+  .home-process-b3 {
+    margin-bottom: 4px;
   }
 }
 
@@ -2193,7 +2313,7 @@ body::after {
 .header-logout-btn:hover {
   color: var(--text-primary);
   border-color: var(--border-hover);
-  background: rgba(34, 197, 94, 0.06);
+  background: rgba(255, 90, 31, 0.08);
 }
 
 /* ─── Auth pages ─────────────────────────────────── */

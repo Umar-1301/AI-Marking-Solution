@@ -18,26 +18,46 @@ const PROGRESS_LABELS = {
   done:           'Done',
 }
 
-const PlusIcon = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-    <line x1="12" y1="5" x2="12" y2="19" />
-    <line x1="5" y1="12" x2="19" y2="12" />
+const ChevronIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="9 18 15 12 9 6" />
   </svg>
 )
 
-function CollapsiblePanel({ title, isOpen, onToggle, children }) {
+const SchemeIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <polyline points="14 2 14 8 20 8" />
+  </svg>
+)
+
+const SessionIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M9 11l3 3L22 4" />
+    <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+  </svg>
+)
+
+// Sidebar nav rail item — a persistent, expandable, icon-labelled entry.
+// Distinct from a plain accordion: it's meant to read as page navigation
+// (active/expanded state gets a left accent bar + filled icon), not just a
+// collapsible content block.
+function SidebarNavItem({ icon, title, isOpen, onToggle, hasItems, emptyText, children }) {
   return (
-    <div className="home-panel">
-      <button className="home-panel-header" type="button" onClick={onToggle}>
-        <span className="home-panel-title">{title}</span>
-        <span className={`home-panel-icon${isOpen ? ' is-open' : ''}`}>
-          <PlusIcon />
+    <div className="home-navitem">
+      <button
+        type="button"
+        className={`home-navitem-head${isOpen ? ' is-expanded' : ''}`}
+        onClick={onToggle}
+      >
+        <span className="home-navitem-icon">{icon}</span>
+        <span className="home-navitem-label">{title}</span>
+        <span className={`home-navitem-chevron${isOpen ? ' is-expanded' : ''}`}>
+          <ChevronIcon />
         </span>
       </button>
-      <div className={`home-panel-body${isOpen ? ' is-open' : ''}`}>
-        <div className="home-panel-cards">
-          {children}
-        </div>
+      <div className={`home-navitem-body${isOpen ? ' is-expanded' : ''}`}>
+        {hasItems ? children : <p className="home-navitem-empty">{emptyText}</p>}
       </div>
     </div>
   )
@@ -155,101 +175,68 @@ function Home() {
 
   return (
     <div className="home-page">
-      <div className="home-grid">
+      <div className="home-shell">
 
-        {/* ── Left column ── */}
-        <div className="home-left-col">
-          <section className="home-marketing">
-            <div className="home-eyebrow">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-              </svg>
-              AI-POWERED ASSISTANT
-            </div>
-
-            <h1 className="home-title">
-              Smarter marking,<br />
-              <span className="home-title-accent">better outcomes.</span>
-            </h1>
-
-            <p className="home-description">
-              Choose your class, upload the mark scheme, and let AIMIRA's AI do the heavy
-              lifting—so you can focus on what matters most: your students.
-            </p>
-
-            <div className="home-features">
-              <div className="home-feature">
-                <span className="home-feature-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <polyline points="20 6 9 17 4 12" />
-                  </svg>
-                </span>
-                Built for teachers
-              </div>
-              <div className="home-feature">
-                <span className="home-feature-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-                  </svg>
-                </span>
-                Secure &amp; private
-              </div>
-              <div className="home-feature">
-                <span className="home-feature-icon">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2 L13.5 8.5 L20 10 L13.5 11.5 L12 18 L10.5 11.5 L4 10 L10.5 8.5 Z" />
-                  </svg>
-                </span>
-                AI that understands context
-              </div>
-            </div>
-          </section>
-
-          {lessons.length > 0 && (
-            <>
-              <CollapsiblePanel
-                title="Previous mark schemes"
-                isOpen={panel1Open}
-                onToggle={() => setPanel1Open(o => !o)}
+        {/* ── Sidebar nav rail — persistent, page-contextual ── */}
+        <aside className="home-sidebar">
+          <SidebarNavItem
+            icon={<SchemeIcon />}
+            title="Previous mark schemes"
+            isOpen={panel1Open}
+            onToggle={() => setPanel1Open(o => !o)}
+            hasItems={lessons.length > 0}
+            emptyText="No mark schemes yet"
+          >
+            {lessons.map(l => (
+              <button
+                key={l.id}
+                type="button"
+                className={`home-navitem-card${selectedLesson?.id === l.id ? ' is-selected' : ''}`}
+                onClick={() => handleSelectLesson(l)}
               >
-                {lessons.map(l => (
-                  <button
-                    key={l.id}
-                    type="button"
-                    className={`home-panel-card${selectedLesson?.id === l.id ? ' is-selected' : ''}`}
-                    onClick={() => handleSelectLesson(l)}
-                  >
-                    <span className="home-panel-card-title">{l.lesson_title}</span>
-                    <span className="home-panel-card-sub">{l.class_name}</span>
-                    <span className="home-panel-card-date">{formatDate(l.created_at)}</span>
-                  </button>
-                ))}
-              </CollapsiblePanel>
+                <span className="home-navitem-card-title">{l.lesson_title}</span>
+                <span className="home-navitem-card-sub">{l.class_name}</span>
+                <span className="home-navitem-card-date">{formatDate(l.created_at)}</span>
+              </button>
+            ))}
+          </SidebarNavItem>
 
-              <CollapsiblePanel
-                title="Previous marking sessions"
-                isOpen={panel2Open}
-                onToggle={() => setPanel2Open(o => !o)}
+          <SidebarNavItem
+            icon={<SessionIcon />}
+            title="Previous marking sessions"
+            isOpen={panel2Open}
+            onToggle={() => setPanel2Open(o => !o)}
+            hasItems={lessons.length > 0}
+            emptyText="No marking sessions yet"
+          >
+            {lessons.map(l => (
+              <button
+                key={l.id}
+                type="button"
+                className="home-navitem-card"
+                onClick={() => navigate(`/student-feedback/${l.id}`)}
               >
-                {lessons.map(l => (
-                  <button
-                    key={l.id}
-                    type="button"
-                    className="home-panel-card"
-                    onClick={() => navigate(`/student-feedback/${l.id}`)}
-                  >
-                    <span className="home-panel-card-title">{l.lesson_title}</span>
-                    <span className="home-panel-card-sub">{l.class_name}</span>
-                    <span className="home-panel-card-date">{formatDate(l.created_at)}</span>
-                  </button>
-                ))}
-              </CollapsiblePanel>
-            </>
-          )}
-        </div>
+                <span className="home-navitem-card-title">{l.lesson_title}</span>
+                <span className="home-navitem-card-sub">{l.class_name}</span>
+                <span className="home-navitem-card-date">{formatDate(l.created_at)}</span>
+              </button>
+            ))}
+          </SidebarNavItem>
+        </aside>
 
-        {/* ── Right column — action card ── */}
-        <section className="home-action-card">
+        {/* ── Main pane — hero, action card, process strip ── */}
+        <main className="home-main">
+          <div className="home-process-track" aria-hidden>
+            <h3 className="home-process-heading home-process-h1">Choose class</h3>
+            <h3 className="home-process-heading home-process-h2">Upload mark scheme</h3>
+            <h3 className="home-process-heading home-process-h3">Review results</h3>
+
+            <span className="home-process-node home-process-b1"><span className="home-process-badge">1</span></span>
+            <span className="home-process-node home-process-b2"><span className="home-process-badge">2</span></span>
+            <span className="home-process-node home-process-b3"><span className="home-process-badge">3</span></span>
+          </div>
+
+          <section className="home-action-card">
           <div className="home-action-header">
             <h2 className="home-action-title">Start a new marking session</h2>
             <span className="home-action-cap">
@@ -385,42 +372,7 @@ function Home() {
             <span>{loading ? 'Analysing mark scheme…' : 'Begin marking'}</span>
           </button>
         </section>
-      </div>
-
-      <div className="home-process-strip" aria-hidden>
-        <div className="home-process-step">
-          <span className="home-process-badge">1</span>
-          <div className="home-process-body">
-            <h3>Choose class</h3>
-            <p>Select the class you want to mark for.</p>
-          </div>
-        </div>
-        <span className="home-process-arrow">
-          <svg viewBox="0 0 64 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeDasharray="4 4">
-            <line x1="2" y1="8" x2="56" y2="8" />
-            <polyline points="50 2 60 8 50 14" strokeDasharray="0" />
-          </svg>
-        </span>
-        <div className="home-process-step">
-          <span className="home-process-badge">2</span>
-          <div className="home-process-body">
-            <h3>Upload mark scheme</h3>
-            <p>Upload your mark scheme in PDF or image format.</p>
-          </div>
-        </div>
-        <span className="home-process-arrow">
-          <svg viewBox="0 0 64 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeDasharray="4 4">
-            <line x1="2" y1="8" x2="56" y2="8" />
-            <polyline points="50 2 60 8 50 14" strokeDasharray="0" />
-          </svg>
-        </span>
-        <div className="home-process-step">
-          <span className="home-process-badge">3</span>
-          <div className="home-process-body">
-            <h3>Review results</h3>
-            <p>Instant, consistent marking with clear insights.</p>
-          </div>
-        </div>
+        </main>
       </div>
     </div>
   )

@@ -57,7 +57,7 @@ function SelectQuestion() {
           </h1>
 
           <p className="home-description">
-            Choose your class, upload the mark scheme, and let AIMIRA's AI do the heavy
+            Choose your class, upload the mark scheme, and let KLASSIO's AI do the heavy
             lifting—so you can focus on what matters most: your students.
           </p>
         </section>
