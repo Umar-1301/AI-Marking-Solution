@@ -144,6 +144,37 @@ export async function getMarkingResults(lessonId) {
     return data.results
 }
 
+// Requests a short-lived, write-only SAS URL scoped to one student's blob
+// path — the file itself is never sent to our backend, only its name.
+export async function getUploadUrl(lessonId, studentId, fileName) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/students/${studentId}/upload-url`, {
+        method:      'POST',
+        headers:     { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body:        JSON.stringify({ fileName }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to get upload URL')
+    return data.uploadUrl
+}
+
+// PUTs straight to blob storage using the SAS URL above — bypasses our own
+// backend entirely for the file bytes. Not our API, so no API_BASE and no
+// credentials (auth is the SAS query string itself, not our session
+// cookie). x-ms-blob-type is required by the Blob REST API for a block
+// blob PUT.
+export async function uploadToBlob(uploadUrl, file) {
+    const response = await fetch(uploadUrl, {
+        method:  'PUT',
+        headers: {
+            'x-ms-blob-type': 'BlockBlob',
+            'Content-Type':   file.type,
+        },
+        body: file,
+    })
+    if (!response.ok) throw new Error(`Blob upload failed (${response.status})`)
+}
+
 // Plain request/response — the backend route only ever returns one terminal
 // result (never intermediate progress), and the caller re-fetches the actual
 // result from GET /results afterward rather than trust this response's

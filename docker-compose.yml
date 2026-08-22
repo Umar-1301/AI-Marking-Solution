@@ -64,6 +64,41 @@ services:
       retries: 20
       start_period: 20s
 
+  # Local stand-in for Azure Blob Storage — same Blob REST API (SAS tokens,
+  # containers, blobs all behave the same), so the SAS-based upload flow this
+  # app is moving to can be built and exercised entirely locally before any
+  # Azure Storage account exists. Only used when the local .env points
+  # AZURE_STORAGE_CONNECTION_STRING at Azurite's well-known dev connection
+  # string — production points it at the real Storage account instead,
+  # completely unaffected by this container's existence.
+  #
+  # Blob service only (azurite-blob, not the default azurite entrypoint) —
+  # nothing in the plan needs the Queue or Table emulators yet.
+  #
+  #   docker compose up -d azurite
+  #
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    container_name: aimira-azurite
+    # --skipApiVersionCheck: client tooling (az CLI, SDKs) sends a storage API
+    # version newer than this pinned Azurite build recognizes even though the
+    # actual request shape is compatible — this is Azurite's own documented
+    # flag for that mismatch, not a functionality trade-off.
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data --debug /data/debug.log --skipApiVersionCheck
+    ports:
+      - "10000:10000"
+    volumes:
+      - azuritedata:/data
+    healthcheck:
+      # TCP probe via node rather than curl/nc/bash's /dev/tcp — the image is
+      # a plain node runtime (that's what runs Azurite itself), so node is
+      # the one thing guaranteed present.
+      test: ["CMD-SHELL", "node -e \"require('net').createConnection(10000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   pgdata:
   mssqldata:
+  azuritedata:

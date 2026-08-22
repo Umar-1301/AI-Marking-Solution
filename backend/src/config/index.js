@@ -37,6 +37,15 @@ export default {
     // these, so db/index.js always falls through to Entra ID there, unchanged.
     SQL_USER: process.env.SQL_USER || null,
     SQL_PASSWORD: process.env.SQL_PASSWORD || null,
+    // Blob storage target for student work uploads. Local-only for now — set
+    // to Azurite's well-known dev connection string to use the docker-compose
+    // Azurite container (see docker-compose.yml). Required for now since
+    // there is no production/Entra ID branch wired up yet; that split (like
+    // the SQL_SERVER/SQL_USER one above) lands when this moves to Azure.
+    AZURE_STORAGE_CONNECTION_STRING: (() => {
+        if (!process.env.AZURE_STORAGE_CONNECTION_STRING) throw new Error('AZURE_STORAGE_CONNECTION_STRING environment variable is not set')
+        return process.env.AZURE_STORAGE_CONNECTION_STRING
+    })(),
     MAX_FILE_SIZE_MB: 5,
     MAX_PDF_PAGES: 30,
     ALLOWED_MIME_TYPES: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'],

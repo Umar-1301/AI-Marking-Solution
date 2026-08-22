@@ -7,6 +7,7 @@ import { lessonDb, markingDb, classDb } from '../db/index.js'
 import { makeFileSecurity } from '../middleware/fileSecurity.js'
 import { makeValidateFile } from '../middleware/validateFile.js'
 import { getOcrFromAI, getMarkFromAIWithSchemeText } from '../services/aiService.js'
+import { generateUploadUrl } from '../services/blobService.js'
 import { sanitizeAIResult } from '../utils/sanitize.js'
 import { sanitiseOcrText } from '../middleware/inputSecurity.js'
 import {
@@ -304,6 +305,30 @@ router.get('/:lessonId/result_presence/:studentId', async (req, res, next) => {
         const studentId = parseInt(req.params.studentId)
         const present   = await markingDb.checkResultPresence(studentId, lessonId, req.user.id)
         res.json({ present })
+    } catch (err) {
+        next(err)
+    }
+})
+
+// POST /lessons/:lessonId/students/:studentId/upload-url — mint a
+// short-lived, write-only SAS URL scoped to exactly this student's blob
+// path. The frontend PUTs the file straight to blob storage with it; the
+// file bytes never pass through this server (see services/blobService.js).
+router.post('/:lessonId/students/:studentId/upload-url', async (req, res, next) => {
+    try {
+        const lessonId  = parseInt(req.params.lessonId)
+        const studentId = parseInt(req.params.studentId)
+        const fileName  = req.body.fileName
+
+        if (!fileName || typeof fileName !== 'string' || fileName.length > 255) {
+            return res.status(400).json({ error: 'fileName is required' })
+        }
+
+        const valid = await markingDb.validateStudent(studentId, lessonId, req.user.id)
+        if (!valid) return res.status(404).json({ error: 'Student not found in this lesson' })
+
+        const uploadUrl = await generateUploadUrl(req.user.id, lessonId, studentId, fileName)
+        res.json({ uploadUrl })
     } catch (err) {
         next(err)
     }

@@ -6,7 +6,8 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon --env-file=.env src/server.js",
-    "db:init": "node --env-file=.env db/apply-schema.mjs"
+    "db:init": "node --env-file=.env db/apply-schema.mjs",
+    "blob:init": "node --env-file=.env blob/init-container.mjs"
   },
   "keywords": [],
   "author": "",
@@ -14,6 +15,7 @@
   "type": "module",
   "dependencies": {
     "@azure/identity": "^4.13.1",
+    "@azure/storage-blob": "^12.33.0",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",

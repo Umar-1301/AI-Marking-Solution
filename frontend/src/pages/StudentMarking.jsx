@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   getLesson, getStudents, getLessonOcr,
-  getResultPresence, submitStudentWork,
+  getResultPresence, getUploadUrl, uploadToBlob,
 } from '../services/api'
 
 const CIRCUMFERENCE = 2 * Math.PI * 26 // r=26 → ≈163.4
@@ -43,9 +43,14 @@ function StudentMarking() {
   const [ocrError, setOcrError] = useState(null)
   const [notFound, setNotFound] = useState(false)
 
-  // { [studentId]: { status: 'marking'|'done'|'error', error? } }
-  // In-memory only, for this page visit — the actual result is persisted
-  // server-side and intentionally not read back here. See StudentFeedback.
+  // { [studentId]: { status: 'uploading'|'done'|'error', error? } }
+  // In-memory only, for this page visit — 'done' means either "this
+  // student's file finished uploading to blob storage just now" (see
+  // handleFileSelected) or "a marked result already exists in the DB from
+  // a previous session" (see the presence-check effect below). Not
+  // distinguished visually yet; both show the same tick. No persistence of
+  // the upload itself yet — a refresh loses it until the confirm/DB step
+  // is built.
   const [markStates, setMarkStates] = useState({})
 
   const fileInputRef   = useRef(null)
@@ -72,9 +77,10 @@ function StudentMarking() {
       .catch(err => setOcrError(err.message))
   }, [lessonId])
 
-  // On load/refresh, restore tick state by checking presence only — never
-  // fetches the result itself (see result_presence route). Guards against
-  // clobbering a student already mid-upload in this same tab.
+  // On load/refresh, restore tick state for students already marked in a
+  // previous session — never fetches the result itself (see
+  // result_presence route). Guards against clobbering a student whose
+  // upload is in flight in this same tab right now.
   useEffect(() => {
     if (!lessonId || students.length === 0) return
     let cancelled = false
@@ -88,7 +94,7 @@ function StudentMarking() {
       setMarkStates(prev => {
         const next = { ...prev }
         for (const { studentId, present } of checks) {
-          if (present && next[studentId]?.status !== 'marking') {
+          if (present && next[studentId]?.status !== 'uploading') {
             next[studentId] = { status: 'done' }
           }
         }
@@ -112,17 +118,20 @@ function StudentMarking() {
     fileInputRef.current.click()
   }
 
+  // Two calls: ask our backend for a SAS URL scoped to this one blob (the
+  // file itself never reaches our backend, just its name), then PUT the
+  // file straight to blob storage with that URL. Nothing is persisted to
+  // the DB yet — that's the next step, so a refresh still loses the tick.
   const handleFileSelected = async (e) => {
     const file      = e.target.files[0]
     const studentId = pendingStudent.current
     if (!file || !studentId) return
 
-    setMarkStates(prev => ({ ...prev, [studentId]: { status: 'marking' } }))
+    setMarkStates(prev => ({ ...prev, [studentId]: { status: 'uploading' } }))
 
     try {
-      // The marked result is persisted server-side and intentionally not
-      // read back here — { ok: true } is the only signal this page needs.
-      await submitStudentWork(lessonId, studentId, file)
+      const uploadUrl = await getUploadUrl(lessonId, studentId, file.name)
+      await uploadToBlob(uploadUrl, file)
       setMarkStates(prev => ({ ...prev, [studentId]: { status: 'done' } }))
     } catch (err) {
       setMarkStates(prev => ({ ...prev, [studentId]: { status: 'error', error: err.message } }))
@@ -183,14 +192,14 @@ function StudentMarking() {
                 <span className="student-marking-name">{s.student_name}</span>
 
                 <div className="student-mark-actions">
-                  {status === 'marking' ? (
-                    <span className="student-marking-feedback-placeholder">Marking…</span>
+                  {status === 'uploading' ? (
+                    <span className="student-marking-feedback-placeholder">Uploading…</span>
                   ) : status === 'done' ? (
                     <button
                       className="student-marked-tick"
                       onClick={() => handleUploadClick(s.id)}
-                      aria-label="Marked — click to re-mark"
-                      title="Marked — click to re-mark"
+                      aria-label="Uploaded — click to replace"
+                      title="Uploaded — click to replace"
                     >
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                         <polyline points="20 6 9 17 4 12" />
@@ -198,7 +207,7 @@ function StudentMarking() {
                     </button>
                   ) : status === 'error' ? (
                     <div className="student-result-row">
-                      <span className="student-mark-error">{st.error || 'Marking failed'}</span>
+                      <span className="student-mark-error">{st.error || 'Upload failed'}</span>
                       <button className="student-upload-btn" onClick={() => handleUploadClick(s.id)}>
                         Retry
                       </button>
