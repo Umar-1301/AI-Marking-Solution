@@ -52,7 +52,7 @@ export async function getLessonQuestions(lessonId) {
 //   { type: 'ocr_page', index, totalPages }
 //   { type: 'done', data: { id, class_id, class_name, paper_type, questions } }
 //   { type: 'error', message, detail, code, status }
-export async function createLesson(classId, markSchemeFile, onEvent = () => {}) {
+export async function createLesson(classId, markSchemeFile, onEvent = () => { }) {
     const formData = new FormData()
     formData.append('markScheme', markSchemeFile)
     formData.append('classId', classId)
@@ -72,7 +72,7 @@ export async function createLesson(classId, markSchemeFile, onEvent = () => {}) 
         throw new Error(`Server error (${response.status}) — is the backend running?`)
     }
 
-    const reader  = response.body.getReader()
+    const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     let result = null
@@ -89,7 +89,7 @@ export async function createLesson(classId, markSchemeFile, onEvent = () => {}) 
             if (!line.trim()) continue
             const event = JSON.parse(line)
             onEvent(event)
-            if (event.type === 'done')  result = event.data
+            if (event.type === 'done') result = event.data
             if (event.type === 'error') throw new Error(event.message)
         }
     }
@@ -104,7 +104,7 @@ export async function createLesson(classId, markSchemeFile, onEvent = () => {}) 
 // identically either way.
 export async function reuseMarkScheme(sourceLessonId, classId) {
     const response = await fetch(`${API_BASE}/lessons/${sourceLessonId}/reuse`, {
-        method:  'POST',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ classId }),
@@ -116,7 +116,7 @@ export async function reuseMarkScheme(sourceLessonId, classId) {
 
 export async function selectQuestion(lessonId, selectedQuestionIndex) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/select-question`, {
-        method:  'PATCH',
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({ selectedQuestionIndex }),
@@ -148,10 +148,10 @@ export async function getMarkingResults(lessonId) {
 // path — the file itself is never sent to our backend, only its name.
 export async function getUploadUrl(lessonId, studentId, fileName) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/students/${studentId}/upload-url`, {
-        method:      'POST',
-        headers:     { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body:        JSON.stringify({ fileName }),
+        body: JSON.stringify({ fileName }),
     })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || 'Failed to get upload URL')
@@ -165,32 +165,36 @@ export async function getUploadUrl(lessonId, studentId, fileName) {
 // blob PUT.
 export async function uploadToBlob(uploadUrl, file) {
     const response = await fetch(uploadUrl, {
-        method:  'PUT',
+        method: 'PUT',
         headers: {
             'x-ms-blob-type': 'BlockBlob',
-            'Content-Type':   file.type,
+            'Content-Type': file.type,
         },
         body: file,
     })
     if (!response.ok) throw new Error(`Blob upload failed (${response.status})`)
+
+    // Browser-console only — there's no frontend logging pipeline in this
+    // app, and this PUT goes straight to Azure, bypassing our backend
+    // entirely, so no server-side log can see this event at all. If this
+    // ever needs to be durable (queryable, retained), it'd need to be
+    // reported back to the backend as its own call.
+    console.info(`[blob] uploaded ${file.name} (${file.size} bytes)`)
 }
 
-// Plain request/response — the backend route only ever returns one terminal
-// result (never intermediate progress), and the caller re-fetches the actual
-// result from GET /results afterward rather than trust this response's
-// payload directly. See refreshResults() in StudentMarking.jsx.
-export async function submitStudentWork(lessonId, studentId, studentWorkFile) {
-    const formData = new FormData()
-    formData.append('studentWork', studentWorkFile)
-    formData.append('studentId', String(studentId))
-
+// Triggers marking for work already stored in Blob Storage.
+// Only identifiers cross this request; teacherId comes from the JWT cookie.
+export async function markStudentWork(lessonId, studentId) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/mark-student`, {
-        method:      'POST',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body:        formData,
+        body: JSON.stringify({ studentId }),
     })
 
-    if (response.status === 401) throw new Error('Your session has expired. Please sign in again.')
+    if (response.status === 401) {
+        throw new Error('Your session has expired. Please log in again.')
+    }
 
     const contentType = response.headers.get('content-type') ?? ''
     if (!contentType.includes('json')) {
@@ -198,7 +202,7 @@ export async function submitStudentWork(lessonId, studentId, studentWorkFile) {
     }
 
     const data = await response.json()
-    if (!response.ok) throw new Error(data.error || 'Marking failed')
+    if (!response.ok) throw new Error(data.error || 'Failed to mark student work')
     return data
 }
 

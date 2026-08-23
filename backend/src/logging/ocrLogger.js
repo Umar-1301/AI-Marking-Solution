@@ -58,6 +58,9 @@ const lineFormat = winston.format.printf(({ timestamp, message, ...meta }) => {
             return `${prefix} | ${label} | ${dims.padEnd(10)} | ${chars.padEnd(10)} | ${meta.ms} ms`
         }
 
+        case 'scheme_stored':
+            return `${prefix} | ✓ STORED | lessons          | lesson ${meta.lessonId}`
+
         case 'ocr_done': {
             const pages = `${meta.pages} page${meta.pages === 1 ? '' : 's'}`
             return `${prefix} | ✓ DONE   | ${pages.padEnd(10)} | ${meta.totalChars} chars | ${meta.ms} ms total`
@@ -160,6 +163,10 @@ export function logOcrDone(req, pageCount, totalChars, totalMs) {
         totalChars,
         ms:         totalMs,
     })
+}
+
+export function logSchemeStored(req, lessonId) {
+    logger.info('', { event: 'scheme_stored', requestId: req._requestId, userId: req.user?.id, lessonId })
 }
 
 export function logOcrFailed(req, err) {

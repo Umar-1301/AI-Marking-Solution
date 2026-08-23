@@ -7,14 +7,23 @@ import { lessonDb, markingDb, classDb } from '../db/index.js'
 import { makeFileSecurity } from '../middleware/fileSecurity.js'
 import { makeValidateFile } from '../middleware/validateFile.js'
 import { getOcrFromAI, getMarkFromAIWithSchemeText } from '../services/aiService.js'
-import { generateUploadUrl } from '../services/blobService.js'
 import { sanitizeAIResult } from '../utils/sanitize.js'
 import { sanitiseOcrText } from '../middleware/inputSecurity.js'
 import {
     logOcrStart, logFileInfo, logAiDispatched,
     logOcrFileType, logOcrDims, logOcrPage,
-    logOcrDone, logOcrFailed,
+    logOcrDone, logOcrFailed, logSchemeStored,
 } from '../logging/ocrLogger.js'
+import { generateRequestId } from '../logging/fileLogger.js'
+import {
+    logMarkStart, logBlobRetrieved, logMarkAiDispatched,
+    logMarkAiReturned, logMarkStored, logMarkFailed,
+} from '../logging/markingLogger.js'
+import {
+    generateUploadUrl,
+    findStudentUpload,
+    downloadStudentWork,
+} from '../services/blobService.js'
 
 const router = express.Router()
 
@@ -104,11 +113,11 @@ router.get('/:id/questions', async (req, res, next) => {
         try { parsedScheme = row.structured_scheme ? JSON.parse(row.structured_scheme) : {} }
         catch { parsedScheme = {} }
 
-        const paperType     = parsedScheme.paper_type ?? 'single'
+        const paperType = parsedScheme.paper_type ?? 'single'
         const questionsList = (parsedScheme.questions ?? []).map(q => ({
             question_number: q.question_number,
-            marks:           q.marks,
-            description:     q.description,
+            marks: q.marks,
+            description: q.description,
         }))
 
         res.json({ paper_type: paperType, questions: questionsList })
@@ -192,19 +201,19 @@ router.post('/',
         const cls = await lessonDb.findClass(classId, req.user.id)
         if (!cls) return res.status(404).json({ error: 'Class not found' })
 
-        res.setHeader('Content-Type',     'application/x-ndjson')
+        res.setHeader('Content-Type', 'application/x-ndjson')
         res.setHeader('Transfer-Encoding', 'chunked')
-        res.setHeader('Cache-Control',     'no-cache')
+        res.setHeader('Cache-Control', 'no-cache')
 
-        const emit  = (obj) => res.write(JSON.stringify(obj) + '\n')
+        const emit = (obj) => res.write(JSON.stringify(obj) + '\n')
         const isDev = process.env.NODE_ENV !== 'production'
 
         if (isDev && req._securityLog?.length) {
             emit({ type: 'security', checks: req._securityLog })
         }
 
-        const file       = req.files.markScheme[0]
-        const ocrStart   = Date.now()
+        const file = req.files.markScheme[0]
+        const ocrStart = Date.now()
 
         logOcrStart(req)
         logFileInfo(req, 'SCHEME', file)
@@ -217,7 +226,7 @@ router.post('/',
             const ocrResult = await getOcrFromAI(file)
 
             const stages = ocrResult.stages ?? []
-            const meta   = ocrResult.meta
+            const meta = ocrResult.meta
 
             if (meta) {
                 logOcrFileType(req, meta)
@@ -235,8 +244,8 @@ router.post('/',
 
             logOcrDone(req, meta?.page_count ?? stages.length, meta?.total_chars ?? 0, Date.now() - ocrStart)
 
-            const lessonTitle      = file.originalname.replace(/\.[^.]+$/, '')
-            const cleanOcrText     = sanitiseOcrText(ocrResult.text ?? '')
+            const lessonTitle = file.originalname.replace(/\.[^.]+$/, '')
+            const cleanOcrText = sanitiseOcrText(ocrResult.text ?? '')
             const structuredScheme = ocrResult.structured_scheme
                 ? JSON.stringify(ocrResult.structured_scheme)
                 : ''
@@ -244,32 +253,33 @@ router.post('/',
             const lessonId = await lessonDb.createLesson(
                 lessonTitle, classId, file.originalname, file.mimetype, cleanOcrText, structuredScheme
             )
+            logSchemeStored(req, lessonId)
 
             // Just enough to decide where Home.jsx navigates next — the full
             // question list itself lives in structured_scheme (already
             // persisted above) and is read back DB-side by SelectQuestion.jsx
             // via GET /:id/questions, not carried through this one-time stream.
-            const parsedScheme         = ocrResult.structured_scheme ?? {}
+            const parsedScheme = ocrResult.structured_scheme ?? {}
             const hasMultipleQuestions = parsedScheme.paper_type === 'multi'
                 && (parsedScheme.questions ?? []).length > 1
 
             emit({
                 type: 'done',
                 data: {
-                    id:                     lessonId,
-                    class_id:               classId,
-                    class_name:             cls.class_name,
+                    id: lessonId,
+                    class_id: classId,
+                    class_name: cls.class_name,
                     has_multiple_questions: hasMultipleQuestions,
                 },
             })
         } catch (err) {
             logOcrFailed(req, err)
             emit({
-                type:    'error',
+                type: 'error',
                 message: 'An unexpected error occurred',
-                detail:  err.aiBody      ?? err.message ?? null,
-                code:    err.aiErrorCode ?? null,
-                status:  err.aiStatus    ?? null,
+                detail: err.aiBody ?? err.message ?? null,
+                code: err.aiErrorCode ?? null,
+                status: err.aiStatus ?? null,
             })
         }
 
@@ -282,11 +292,11 @@ router.post('/',
 router.get('/:lessonId/results', async (req, res, next) => {
     try {
         const lessonId = parseInt(req.params.lessonId)
-        const rows      = await markingDb.getResults(lessonId, req.user.id)
-        const results   = rows.map(r => ({
+        const rows = await markingDb.getResults(lessonId, req.user.id)
+        const results = rows.map(r => ({
             studentId: r.student_id,
-            markedAt:  r.marked_at,
-            result:    JSON.parse(r.student_grade),
+            markedAt: r.marked_at,
+            result: JSON.parse(r.student_grade),
         }))
         res.json({ results })
     } catch (err) {
@@ -301,9 +311,9 @@ router.get('/:lessonId/results', async (req, res, next) => {
 // (e.g. StudentMarking on refresh) don't have to pull the full grade payload.
 router.get('/:lessonId/result_presence/:studentId', async (req, res, next) => {
     try {
-        const lessonId  = parseInt(req.params.lessonId)
+        const lessonId = parseInt(req.params.lessonId)
         const studentId = parseInt(req.params.studentId)
-        const present   = await markingDb.checkResultPresence(studentId, lessonId, req.user.id)
+        const present = await markingDb.checkResultPresence(studentId, lessonId, req.user.id)
         res.json({ present })
     } catch (err) {
         next(err)
@@ -316,9 +326,9 @@ router.get('/:lessonId/result_presence/:studentId', async (req, res, next) => {
 // file bytes never pass through this server (see services/blobService.js).
 router.post('/:lessonId/students/:studentId/upload-url', async (req, res, next) => {
     try {
-        const lessonId  = parseInt(req.params.lessonId)
+        const lessonId = parseInt(req.params.lessonId)
         const studentId = parseInt(req.params.studentId)
-        const fileName  = req.body.fileName
+        const fileName = req.body.fileName
 
         if (!fileName || typeof fileName !== 'string' || fileName.length > 255) {
             return res.status(400).json({ error: 'fileName is required' })
@@ -336,61 +346,119 @@ router.post('/:lessonId/students/:studentId/upload-url', async (req, res, next) 
 
 // POST /lessons/:lessonId/mark-student — upload one student's work, get AI
 // marking against the already-extracted scheme, persist the result.
-router.post('/:lessonId/mark-student',
-    upload.fields([{ name: 'studentWork', maxCount: 1 }]),
-    makeFileSecurity(STUDENT_MARK_SLOTS),
-    makeValidateFile(STUDENT_MARK_SLOTS),
-    async (req, res) => {
-        const lessonId  = parseInt(req.params.lessonId)
-        const studentId = parseInt(req.body.studentId)
+router.post('/:lessonId/mark-student', async (req, res, next) => {
+    const lessonId = Number(req.params.lessonId)
+    const studentId = Number(req.body.studentId)
+    const teacherId = req.user.id
 
-        if (!studentId) return res.status(400).json({ error: 'Student ID is required' })
+    if (!Number.isSafeInteger(lessonId) || lessonId <= 0) {
+        return res.status(400).json({ error: 'Valid lesson ID is required' })
+    }
+    if (!Number.isSafeInteger(studentId) || studentId <= 0) {
+        return res.status(400).json({ error: 'Valid student ID is required' })
+    }
 
-        const ocrRow = await lessonDb.getOcrText(lessonId, req.user.id)
-        if (!ocrRow) return res.status(404).json({ error: 'Lesson not found' })
-        // ocrRow.question: no source column for this in the current schema
-        // yet (see lessons table) — always empty until one exists. Ported
-        // as Andeep had it rather than silently dropped, so this activates
-        // for free the moment that column and a capture path are added.
-        const question = ocrRow.question ?? ''
-        const scheme    = resolveScheme(ocrRow)
+    // No fileSecurity middleware runs on this route anymore (no file in the
+    // request body to check), so nothing else sets req._requestId — done
+    // here instead, same generator every other route's logging uses.
+    req._requestId = generateRequestId()
+    logMarkStart(req, lessonId, studentId)
 
-        const valid = await markingDb.validateStudent(studentId, lessonId, req.user.id)
-        if (!valid) return res.status(404).json({ error: 'Student not found in this lesson' })
-
-        const file = req.files.studentWork[0]
-
-        // Plain request/response, not streamed — this route only ever
-        // produces one terminal event (result or error), never intermediate
-        // progress, so there was nothing streaming actually bought here. The
-        // frontend already re-fetches from GET /results after this resolves
-        // rather than trust a payload carried over a stream; see
-        // refreshResults() in StudentMarking.jsx.
-        try {
-            const aiResult = await getMarkFromAIWithSchemeText(file, scheme, question)
-            debugDumpAiResult('mark-student', aiResult)
-
-            // sanitizeAIResult()'s field allowlist now matches the real
-            // response shape (was stale, silently dropping strengths/
-            // improvements/annotations/etc. — fixed in utils/sanitize.js).
-            const sanitized = sanitizeAIResult(aiResult)
-
-            await markingDb.markStudent(
-                studentId, lessonId,
-                file.originalname, file.mimetype,
-                aiResult.student_ocr_text ?? '',
-                JSON.stringify(sanitized)
-            )
-
-            res.json({ ok: true })
-        } catch (err) {
-            res.status(err.aiStatus ?? 500).json({
-                error:  'Marking failed',
-                detail: err.aiBody      ?? err.message ?? null,
-                code:   err.aiErrorCode ?? null,
+    // ownership of lesson id to teacher id is checked against db
+    try {
+        const ocrRow = await lessonDb.getOcrText(
+            lessonId,
+            teacherId
+        )
+        if (!ocrRow) {
+            return res.status(404).json({
+                error: 'Lesson not found'
             })
         }
+
+        const validStudent = await markingDb.validateStudent(
+            studentId,
+            lessonId,
+            teacherId
+        )
+        if (!validStudent) {
+            return res.status(404).json({
+                error: 'Student not found in this lesson'
+            })
+        }
+
+        const upload = await findStudentUpload(
+            teacherId,
+            lessonId,
+            studentId
+        )
+        if (!upload) {
+            return res.status(404).json({
+                error: 'No uploaded work found for this student'
+            })
+        }
+
+        const fileBuffer = await downloadStudentWork(
+            upload.blobName
+        )
+        logBlobRetrieved(req, upload.fileName, fileBuffer.length)
+
+        const file = {
+            buffer: fileBuffer,
+            originalname: upload.fileName,
+            mimetype: upload.mimeType
+        }
+
+        const question = ocrRow.question ?? ''
+        const scheme = resolveScheme(ocrRow)
+
+        logMarkAiDispatched(req)
+        const aiStart = Date.now()
+        const aiResult = await getMarkFromAIWithSchemeText(
+            file,
+            scheme,
+            question
+        )
+        logMarkAiReturned(req, Date.now() - aiStart)
+
+        const santized = sanitizeAIResult(aiResult)
+
+        await markingDb.markStudent(
+            studentId,
+            lessonId,
+            file.originalname,
+            file.mimetype,
+            aiResult.student_ocr_text ?? '',
+            JSON.stringify(santized)
+        )
+        logMarkStored(req, lessonId, studentId)
+
+        res.json({
+            ok: true,
+            studentId,
+        })
+
+    } catch (err) {
+        logMarkFailed(req, err)
+
+        // Preserve the structured error information supplied by aiService.
+        if (
+            err &&
+            typeof err === 'object' &&
+            ('aiStatus' in err || 'aiErrorCode' in err)
+        ) {
+            return res.status(err.aiStatus ?? 502).json({
+                error: 'Marking failed',
+                detail: err.aiBody ?? null,
+                code: err.aiErrorCode ?? null,
+            })
+        }
+
+        // Database and Blob infrastructure errors go through the central
+        // handler, which logs them without exposing internals to the browser.
+        next(err)
     }
-)
+})
 
 export default router
+
