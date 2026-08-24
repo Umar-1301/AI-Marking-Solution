@@ -5,17 +5,18 @@ from prompts import SYSTEM_PROMPT, build_user_prompt, EXTRACTION_SYSTEM_PROMPT, 
 from security.ms_ocr_sanitisation import verify_token
 from schemas.ms_schema import MarkSchemeExtraction
 from schemas.marking_result_schema import MarkingResult
+from validation.mark_int_validation import validate_mark_totals
 from observability.event_log import (
     log_extraction_refusal,
     log_extraction_truncated,
     log_extraction_filtered,
     log_extraction_empty,
+    log_mark_total_corrections,
     log_marking_refusal,
     log_marking_truncated,
     log_marking_filtered,
     log_marking_empty,
 )
-
 
 class ExtractionError(Exception):
     """Common base for every way an extraction call can fail to produce a
@@ -120,7 +121,17 @@ def extract_mark_scheme(scheme_text, expected_token):
     # should fail rather than return something unverified.
     verify_token(expected_token, result.delimiter_token)
 
-    return result.model_dump(exclude={"delimiter_token"})
+    structured_scheme = result.model_dump(exclude={"delimiter_token"})
+
+    # Deterministic post-extraction check that question-level marks are
+    # consistent with their AO allocations, correcting the known pattern
+    # where one AO's allocation is captured as the question total
+    # (see validation/mark_int_validation.py).
+    structured_scheme, corrections = validate_mark_totals(structured_scheme)
+    if corrections:
+        log_mark_total_corrections(corrections)
+
+    return structured_scheme
 
 
 def generate_llm_response(question, essay, rubric, expected_token, max_score=6, exemplars=None):

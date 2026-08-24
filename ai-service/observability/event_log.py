@@ -87,3 +87,34 @@ def log_marking_filtered() -> None:
 
 def log_marking_empty() -> None:
     logger.error("[MARKING] No parsed result and no refusal, truncation, or filter reported — unexplained empty response")
+
+def log_mark_total_corrections(
+    corrections: list[dict],
+) -> None:
+    """
+    Log deterministic mark-total corrections without logging mark-scheme
+    descriptions or other unnecessary source content.
+    """
+    for correction in corrections:
+        allocations = correction.get(
+            "assessment_objectives",
+            [],
+        )
+
+        allocation_summary = ", ".join(
+            (
+                f"{str(allocation.get('ao', 'unknown'))[:40]!r}="
+                f"{allocation.get('marks_available')!r}"
+            )
+            for allocation in allocations
+            if isinstance(allocation, dict)
+        )
+
+        logger.warning(
+            "[VALIDATION] Corrected extracted question marks "
+            f"| rule={correction.get('rule')!r} "
+            f"| question={correction.get('question_number')!r} "
+            f"| declared={correction.get('declared_marks')!r} "
+            f"| corrected={correction.get('computed_marks')!r} "
+            f"| ao_allocations=[{allocation_summary}]"
+        )
