@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   getLesson,
   getStudents,
-  getLessonOcr,
+  getLessonScheme,
   getResultPresence,
   getUploadUrl,
   uploadToBlob,
@@ -56,9 +56,17 @@ function StudentMarking() {
 
   const [lesson, setLesson] = useState(null)
   const [students, setStudents] = useState([])
-  const [ocrText, setOcrText] = useState(null)
-  const [ocrError, setOcrError] = useState(null)
+  // { scheme, ocr_text } from the backend, or null while still loading.
+  // scheme is the structured selected-question object in the normal case;
+  // ocr_text is only present as a fallback when there's no usable
+  // structured_scheme (kept null-vs-not-yet-loaded distinct from "no
+  // scheme found", which is a real state the backend can return).
+  const [schemeData, setSchemeData] = useState(null)
+  const [schemeError, setSchemeError] = useState(null)
   const [notFound, setNotFound] = useState(false)
+  // Single switch for every level's descriptor + marks pill across every
+  // AO — universal, not per-level, per the design.
+  const [levelsExpanded, setLevelsExpanded] = useState(true)
 
   // Per-student statuses:
   // uploading   — the browser is PUTting the file to Blob Storage
@@ -87,9 +95,9 @@ function StudentMarking() {
       .then(setStudents)
       .catch(() => setNotFound(true))
 
-    getLessonOcr(lessonId)
-      .then(setOcrText)
-      .catch(err => setOcrError(err.message))
+    getLessonScheme(lessonId)
+      .then(setSchemeData)
+      .catch(err => setSchemeError(err.message))
   }, [lessonId, navigate])
 
   // Restore students that already have persisted marking results.
@@ -288,14 +296,98 @@ function StudentMarking() {
       <div className="ms-ocr-box">
         <h3 className="ms-ocr-title">Mark Scheme</h3>
 
-        {ocrError ? (
-          <p className="ms-ocr-error">{ocrError}</p>
-        ) : ocrText === null ? (
+        {schemeError ? (
+          <p className="ms-ocr-error">{schemeError}</p>
+        ) : schemeData === null ? (
           <p className="ms-ocr-loading">
             Loading mark scheme…
           </p>
+        ) : schemeData.scheme ? (
+          <div className="ms-scheme">
+            <div className="ms-scheme-header">
+              <span className="ms-scheme-question">
+                {schemeData.scheme.question_number}
+              </span>
+              {(schemeData.scheme.assessment_objectives ?? []).map((ao, i) => (
+                <span key={i} className="ms-scheme-ao-badge">{ao.ao}</span>
+              ))}
+              {schemeData.scheme.marks !== undefined && (
+                <span className="ms-scheme-marks">
+                  {schemeData.scheme.marks} marks
+                </span>
+              )}
+            </div>
+
+            {schemeData.scheme.description && (
+              <p className="ms-scheme-desc">{schemeData.scheme.description}</p>
+            )}
+
+            <div className="ms-scheme-ao-list">
+              {(schemeData.scheme.assessment_objectives ?? []).map((ao, i) => (
+                <div key={i} className="ms-scheme-ao">
+                  <div className="ms-scheme-ao-desc-row">
+                    {ao.description && (
+                      <p className="ms-scheme-ao-desc">{ao.description}</p>
+                    )}
+                    {i === 0 && (ao.bands ?? []).length > 0 && (
+                      <button
+                        type="button"
+                        className={`ms-scheme-levels-toggle${levelsExpanded ? '' : ' is-collapsed'}`}
+                        onClick={() => setLevelsExpanded(prev => !prev)}
+                        aria-label={levelsExpanded ? 'Collapse levels' : 'Expand levels'}
+                        title={levelsExpanded ? 'Collapse levels' : 'Expand levels'}
+                      >
+                        <svg
+                          className="ms-scheme-levels-toggle-icon"
+                          viewBox="0 0 24 24"
+                          width="20"
+                          height="20"
+                          aria-hidden="true"
+                        >
+                          <polygon
+                            points="7,4 20,12 7,20"
+                            fill="currentColor"
+                            stroke="currentColor"
+                            strokeWidth="3"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+
+                  {(ao.bands ?? []).length > 0 && (
+                    <ul className="ms-scheme-bands">
+                      {ao.bands.map((band, j) => (
+                        <li key={j} className="ms-scheme-band">
+                          <div className="ms-scheme-band-level-row">
+                            <div className="ms-scheme-band-level">{band.band}</div>
+                            <div className={`ms-scheme-band-marks ms-scheme-band-marks--compact${levelsExpanded ? ' is-hidden' : ''}`}>
+                              <span className="ms-scheme-band-marks-num">{band.marks}</span>
+                            </div>
+                          </div>
+                          <div className={`ms-scheme-band-collapse${levelsExpanded ? ' is-expanded' : ''}`}>
+                            <div className="ms-scheme-band-collapse-inner">
+                              <div className="ms-scheme-band-row">
+                                <p className="ms-scheme-band-desc">{band.descriptor}</p>
+                                <div className="ms-scheme-band-marks">
+                                  <span className="ms-scheme-band-marks-num">{band.marks}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         ) : (
-          <pre className="ms-ocr-text">{ocrText}</pre>
+          // Fallback only — no structured_scheme could be extracted for
+          // this lesson, so there's nothing structured to show.
+          <pre className="ms-ocr-text">{schemeData.ocr_text}</pre>
         )}
       </div>
 

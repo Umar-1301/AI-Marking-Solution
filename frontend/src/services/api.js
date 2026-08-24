@@ -31,11 +31,14 @@ export async function getLesson(lessonId) {
     return data
 }
 
-export async function getLessonOcr(lessonId) {
+// Returns { scheme: {...} } for the lesson's selected question, or
+// { scheme: null, ocr_text } as a fallback when there's no usable
+// structured_scheme yet.
+export async function getLessonScheme(lessonId) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/ocr`, { credentials: 'include' })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || 'Failed to load mark scheme')
-    return data.ocr_text
+    return data
 }
 
 export async function getLessonQuestions(lessonId) {

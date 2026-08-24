@@ -51,21 +51,29 @@ const upload = multer({
 const SLOTS = [{ field: 'markScheme', label: 'Mark Scheme' }]
 const STUDENT_MARK_SLOTS = [{ field: 'studentWork', label: 'Student Work' }]
 
+// Parses structured_scheme and returns the Question object at
+// selected_question_index (or the first question if none selected yet).
+// Returns null if there's no usable structured_scheme at all — callers
+// each decide their own fallback.
+function getSelectedQuestion(ocrRow) {
+    if (!ocrRow.structured_scheme) return null
+    let parsed
+    try { parsed = JSON.parse(ocrRow.structured_scheme) } catch { return null }
+
+    const questions = parsed.questions
+    if (!Array.isArray(questions) || questions.length === 0) return null
+
+    const idx = ocrRow.selected_question_index ?? 0
+    return questions[idx] ?? questions[0]
+}
+
 // Picks out the question-specific slice of structured_scheme the teacher
 // selected on the question-picker page, so only that question's AOs/bands go
 // to the LLM — not the whole paper — for multi-question mark schemes. Falls
 // back to the raw OCR text if there's no structured_scheme to parse at all.
 function resolveScheme(ocrRow) {
-    if (!ocrRow.structured_scheme) return ocrRow.ocr_text
-    let parsed
-    try { parsed = JSON.parse(ocrRow.structured_scheme) } catch { return ocrRow.structured_scheme }
-
-    const questions = parsed.questions
-    if (!Array.isArray(questions) || questions.length === 0) return ocrRow.structured_scheme
-
-    const idx = ocrRow.selected_question_index ?? 0
-    const question = questions[idx] ?? questions[0]
-    return JSON.stringify(question)
+    const question = getSelectedQuestion(ocrRow)
+    return question ? JSON.stringify(question) : ocrRow.ocr_text
 }
 
 // GET /lessons — all lessons belonging to the logged-in teacher, newest first.
@@ -89,12 +97,26 @@ router.get('/:id', async (req, res, next) => {
     }
 })
 
-// GET /lessons/:id/ocr — return the stored OCR text for a lesson owned by this teacher.
+// GET /lessons/:id/ocr — return the extracted mark scheme for the lesson's
+// currently selected question, structured for display — not raw OCR text.
+// Falls back to { scheme: null, ocr_text } if there's no usable
+// structured_scheme yet (an older lesson, or extraction found nothing).
 router.get('/:id/ocr', async (req, res, next) => {
     try {
         const row = await lessonDb.getOcrText(req.params.id, req.user.id)
         if (!row) return res.status(404).json({ error: 'Lesson not found' })
-        res.json({ ocr_text: row.ocr_text })
+
+        const question = getSelectedQuestion(row)
+        if (!question) return res.json({ scheme: null, ocr_text: row.ocr_text })
+
+        res.json({
+            scheme: {
+                question_number:       question.question_number,
+                marks:                 question.marks,
+                description:           question.description,
+                assessment_objectives: question.assessment_objectives ?? [],
+            },
+        })
     } catch (err) {
         next(err)
     }

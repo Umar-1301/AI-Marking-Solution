@@ -4,6 +4,15 @@
   padding: 0;
 }
 
+/* Reserves the vertical scrollbar's width whether or not scrolling is
+   actually needed. Without this, any interaction that changes page height
+   enough to add/remove the scrollbar (e.g. collapsing the mark scheme
+   levels) shifts the entire page horizontally by the scrollbar's width —
+   including elements nowhere near what changed, like the header. */
+html {
+  scrollbar-gutter: stable;
+}
+
 :root {
   --bg: #1a1a1d;
   --surface: #232326;
@@ -1451,9 +1460,6 @@ body::after {
 .ms-ocr-box {
   max-width: 860px;
   margin: 0 auto 28px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
   padding: 20px 24px;
 }
 
@@ -1486,6 +1492,223 @@ body::after {
 }
 
 .ms-ocr-error { color: var(--error, #ef4444); }
+
+/* ─── Structured mark scheme (selected question) ──── */
+
+.ms-scheme-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.ms-scheme-question {
+  font-size: 1.35rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ms-scheme-marks {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.ms-scheme-desc {
+  font-size: 0.875rem;
+  font-weight: 700;
+  line-height: 1.55;
+  color: var(--accent);
+  margin: 0 0 16px;
+}
+
+.ms-scheme-ao-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ms-scheme-ao {
+  /* No box — sits directly on the page background. .ms-scheme-ao-list's
+     gap (below) provides spacing between AOs instead of padding here. */
+}
+
+.ms-scheme-ao-badge {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+
+.ms-scheme-ao-desc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0 0 10px;
+}
+
+.ms-scheme-ao-desc {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+.ms-scheme-levels-toggle {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  line-height: 0;
+}
+
+.ms-scheme-levels-toggle:hover {
+  color: var(--accent-2);
+}
+
+/* Points down while expanded (the mark scheme loads expanded by default —
+   see levelsExpanded's initial state), rotates to point right on collapse.
+   The icon itself is drawn pointing right, so "down" is +90deg from that. */
+.ms-scheme-levels-toggle-icon {
+  transform: rotate(90deg);
+  transition: transform 0.25s ease;
+}
+
+.ms-scheme-levels-toggle.is-collapsed .ms-scheme-levels-toggle-icon {
+  transform: rotate(0deg);
+}
+
+.ms-scheme-bands {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 10px 0 0;
+  border-top: 1px solid var(--border);
+}
+
+/* Spacing between bands comes from padding + a divider on each item,
+   rather than a uniform list gap — matches the level-heading-then-row
+   layout below (a bare gap would look uneven against the pill's height). */
+.ms-scheme-band {
+  padding: 8px 0;
+}
+
+.ms-scheme-band + .ms-scheme-band {
+  border-top: 1px solid var(--border);
+}
+
+/* Level heading, and — only when collapsed — the shrunk marks pill sit on
+   this same row, horizontally in line with each other. Bottom margin lives
+   here rather than on the level text so it applies once regardless of
+   whether the compact pill is present. */
+.ms-scheme-band-level-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.ms-scheme-band-level {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+/* Description + marks pill side by side — align-items: center is what
+   vertically centers the pill against the full height of the paragraph,
+   not just the first line. */
+.ms-scheme-band-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.ms-scheme-band-desc {
+  flex: 1;
+  margin: 0;
+  font-size: 0.7rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.ms-scheme-band-marks {
+  flex: 0 0 auto;
+  min-width: 58px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent-glow);
+  text-align: center;
+}
+
+/* Collapsed state only — smaller version sitting next to the level
+   heading instead of next to the (hidden) description. */
+.ms-scheme-band-marks--compact {
+  min-width: 40px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  opacity: 1;
+  transition: opacity 0.25s ease;
+}
+
+/* Always rendered (see .ms-scheme-band-collapse below for why), just
+   invisible while expanded — fades in as the full row fades out. */
+.ms-scheme-band-marks--compact.is-hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.ms-scheme-band-marks--compact .ms-scheme-band-marks-num {
+  font-size: 0.8rem;
+}
+
+/* Animates the description+pill row in/out. CSS can't transition to/from
+   height: auto directly, so this uses the grid-template-rows trick: a 0fr
+   row genuinely has zero height, a 1fr row takes exactly its content's
+   height, and — unlike a hardcoded max-height — that works regardless of
+   how long the descriptor text is. The inner wrapper's overflow: hidden is
+   what actually clips the content during the transition. */
+.ms-scheme-band-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows 0.25s ease;
+}
+
+.ms-scheme-band-collapse.is-expanded {
+  grid-template-rows: 1fr;
+}
+
+.ms-scheme-band-collapse-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+.ms-scheme-band-collapse.is-expanded .ms-scheme-band-row {
+  opacity: 1;
+}
+
+.ms-scheme-band-marks-num {
+  display: block;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--accent-2);
+  line-height: 1.1;
+}
 
 /* ─── Hero ───────────────────────────────────────── */
 
