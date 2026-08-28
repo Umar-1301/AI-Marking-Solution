@@ -173,6 +173,47 @@ BEGIN
 END;
 GO
 
+/* ---- Asynchronous marking jobs ------------------------------------------ */
+-- One row represents one attempt to mark one student's work. Service Bus
+-- delivers the work, while this table is the durable application-level source
+-- of truth used by the worker and the authenticated frontend status route.
+IF OBJECT_ID(N'dbo.marking_jobs', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.marking_jobs (
+        job_id        UNIQUEIDENTIFIER NOT NULL
+            CONSTRAINT DF_marking_jobs_job_id DEFAULT (NEWID()),
+        teacher_id    INT              NOT NULL REFERENCES dbo.teachers(id),
+        lesson_id     INT              NOT NULL REFERENCES dbo.lessons(id),
+        student_id    INT              NOT NULL REFERENCES dbo.students(id),
+        status        NVARCHAR(20)     NOT NULL,
+        queued_at     DATETIME2(3)     NOT NULL
+            CONSTRAINT DF_marking_jobs_queued_at DEFAULT (SYSUTCDATETIME()),
+        processing_at DATETIME2(3)     NULL,
+        marking_at    DATETIME2(3)     NULL,
+        completed_at  DATETIME2(3)     NULL,
+        updated_at    DATETIME2(3)     NOT NULL
+            CONSTRAINT DF_marking_jobs_updated_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT PK_marking_jobs PRIMARY KEY (job_id),
+        CONSTRAINT CK_marking_jobs_status
+            CHECK (status IN (N'queued', N'processing', N'marking', N'complete'))
+    );
+END;
+GO
+
+-- Supports the lesson-level status check and selecting the newest attempt for
+-- each student without scanning the full job history.
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE name = N'IX_marking_jobs_lesson_teacher_student_queued'
+      AND object_id = OBJECT_ID(N'dbo.marking_jobs')
+)
+BEGIN
+    CREATE INDEX IX_marking_jobs_lesson_teacher_student_queued
+        ON dbo.marking_jobs (lesson_id, teacher_id, student_id, queued_at DESC);
+END;
+GO
+
 -- UNIQUE(lesson_id, student_id): a student can't be graded twice in one lesson.
 IF OBJECT_ID(N'dbo.marking_results', N'U') IS NULL
 BEGIN

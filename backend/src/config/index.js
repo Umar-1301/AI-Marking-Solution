@@ -37,15 +37,30 @@ export default {
     // these, so db/index.js always falls through to Entra ID there, unchanged.
     SQL_USER: process.env.SQL_USER || null,
     SQL_PASSWORD: process.env.SQL_PASSWORD || null,
-    // Blob storage target for student work uploads. Local-only for now — set
-    // to Azurite's well-known dev connection string to use the docker-compose
-    // Azurite container (see docker-compose.yml). Required for now since
-    // there is no production/Entra ID branch wired up yet; that split (like
-    // the SQL_SERVER/SQL_USER one above) lands when this moves to Azure.
-    AZURE_STORAGE_CONNECTION_STRING: (() => {
-        if (!process.env.AZURE_STORAGE_CONNECTION_STRING) throw new Error('AZURE_STORAGE_CONNECTION_STRING environment variable is not set')
-        return process.env.AZURE_STORAGE_CONNECTION_STRING
-    })(),
+    // Blob storage target for student work uploads. Local-only: Azurite's
+    // well-known dev connection string (see docker-compose.yml's azurite
+    // service). Azurite cannot do Entra ID at all, so local development has
+    // no choice but the account-key connection string. Optional, not
+    // required — unset falls through to the managed-identity path below.
+    AZURE_STORAGE_CONNECTION_STRING: process.env.AZURE_STORAGE_CONNECTION_STRING || null,
+    // Production path — the account URL only, NOT a secret. The container
+    // authenticates with its Entra managed identity via
+    // DefaultAzureCredential (same approach as SQL_SERVER above, which
+    // likewise carries only a hostname and no credential), so there is no
+    // key or connection string to store, rotate, or leak. Format:
+    // https://<account>.blob.core.windows.net
+    AZURE_STORAGE_ACCOUNT_URL: process.env.AZURE_STORAGE_ACCOUNT_URL || null,
+    // Service Bus target for the marking queue. Local-only: the emulator's
+    // fixed development connection string (see docker-compose.yml's
+    // servicebus-emulator). The emulator cannot do Entra ID at all, so local
+    // development has no choice but this connection string. Optional, not
+    // required — unset falls through to the managed-identity path below.
+    AZURE_SERVICEBUS_CONNECTION_STRING: process.env.AZURE_SERVICEBUS_CONNECTION_STRING || null,
+    // Production path — the namespace hostname only, NOT a secret. Same
+    // managed-identity reasoning as AZURE_STORAGE_ACCOUNT_URL above.
+    // Format: <namespace>.servicebus.windows.net (no scheme — the SDK
+    // takes a bare fully-qualified namespace here, unlike blob's full URL)
+    AZURE_SERVICEBUS_NAMESPACE: process.env.AZURE_SERVICEBUS_NAMESPACE || null,
     MAX_FILE_SIZE_MB: 5,
     MAX_PDF_PAGES: 30,
     ALLOWED_MIME_TYPES: ['image/jpeg', 'image/png', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'],

@@ -98,7 +98,68 @@ services:
       timeout: 5s
       retries: 10
 
+  # Metadata store for the Service Bus emulator below — it needs its own SQL
+  # Server instance to hold queue/topic state. Deliberately NOT the `mssql`
+  # service above: that one holds KlassioDatabase, and wiping this volume to
+  # reset queue state must never risk the app's own local schema (or vice
+  # versa). Nothing in the app ever connects to this instance.
+  servicebus-sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: aimira-servicebus-sql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+      # Local-dev only, and only ever read by the emulator container.
+      MSSQL_SA_PASSWORD: "AimiraServiceBusDev123!"
+    volumes:
+      - servicebussqldata:/var/opt/mssql
+    healthcheck:
+      # Same plain TCP probe as the `mssql` service — sqlcmd's path has moved
+      # between image versions, a TCP check works regardless.
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/1433' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
+  # Local stand-in for Azure Service Bus — same AMQP protocol and SDK, so
+  # queue code written against this works against the real thing. Ports:
+  # 5672 is AMQP (send/receive), 5300 is the HTTP management/health API.
+  #
+  # Unlike Azure itself, entities cannot be created at runtime here: the
+  # queues/topics that exist are exactly what Config.json declares at
+  # startup. Changing them means editing that file and recreating this
+  # container, not calling an admin API.
+  #
+  #   docker compose up -d servicebus-emulator   # brings up servicebus-sql too
+  #
+  servicebus-emulator:
+    image: mcr.microsoft.com/azure-messaging/servicebus-emulator:latest
+    container_name: aimira-servicebus-emulator
+    volumes:
+      - ./backend/servicebus/config.json:/ServiceBus_Emulator/ConfigFiles/Config.json
+    ports:
+      - "5672:5672"
+      - "5300:5300"
+    environment:
+      # Resolves over the compose network to the service above.
+      SQL_SERVER: servicebus-sql
+      MSSQL_SA_PASSWORD: "AimiraServiceBusDev123!"
+      ACCEPT_EULA: "Y"
+      EMULATOR_HTTP_PORT: "5300"
+    depends_on:
+      servicebus-sql:
+        condition: service_healthy
+    # No healthcheck: this image is distroless — no shell, no curl, not even
+    # busybox — so there is nothing to exec inside it, and Docker
+    # healthchecks can only run commands in the container. The emulator does
+    # expose GET :5300/health, but that has to be polled from the host
+    # (`curl http://localhost:5300/health`). Nothing in compose depends on
+    # this service, so the missing healthcheck costs us no ordering
+    # guarantee — the one that matters (SQL before emulator) is above.
+
 volumes:
   pgdata:
   mssqldata:
   azuritedata:
+  servicebussqldata:

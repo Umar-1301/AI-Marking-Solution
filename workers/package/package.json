@@ -1,0 +1,28 @@
+{
+  "name": "worker",
+  "version": "1.0.0",
+  "description": "Marking worker service — will consume the Service Bus queue and run student marking independently of the main backend, so it can be scaled and deployed on its own. Not wired to anything yet.",
+  "main": "../server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon --env-file=../env/.env ../server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@azure/identity": "^4.13.2",
+    "@azure/service-bus": "^7.9.5",
+    "@azure/storage-blob": "^12.33.0",
+    "express": "^5.2.1",
+    "form-data": "^4.0.6",
+    "mssql": "^12.7.0",
+    "node-fetch": "^3.3.2",
+    "winston": "^3.19.0",
+    "winston-daily-rotate-file": "^5.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

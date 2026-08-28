@@ -1,12 +1,32 @@
 import { BlobServiceClient, BlobSASPermissions } from '@azure/storage-blob'
+import { DefaultAzureCredential } from '@azure/identity'
 import config from '../config/index.js'
 
 const CONTAINER_NAME = 'student-work'
 const UPLOAD_SAS_TTL_MINUTES = 10
 
-const blobServiceClient = BlobServiceClient.fromConnectionString(
-    config.AZURE_STORAGE_CONNECTION_STRING
-)
+// Local: Azurite's account-key connection string (it cannot do Entra ID).
+// Production: account URL + DefaultAzureCredential — the Container App's
+// managed identity, so no key is stored anywhere. Mirrors db/index.js's SQL
+// branch: a local-only credential path, or Entra ID when it's absent.
+//
+// usingManagedIdentity is retained because it changes more than just how the
+// client is built — see generateUploadUrl() below, where the two credential
+// types require genuinely different SAS-signing calls.
+const usingManagedIdentity = !config.AZURE_STORAGE_CONNECTION_STRING
+
+if (usingManagedIdentity && !config.AZURE_STORAGE_ACCOUNT_URL) {
+    throw new Error(
+        'Neither AZURE_STORAGE_CONNECTION_STRING (local emulator) nor ' +
+        'AZURE_STORAGE_ACCOUNT_URL (production managed identity) is set — ' +
+        'see docker-compose.yml\'s azurite service for local setup.'
+    )
+}
+
+const blobServiceClient = usingManagedIdentity
+    ? new BlobServiceClient(config.AZURE_STORAGE_ACCOUNT_URL, new DefaultAzureCredential())
+    : BlobServiceClient.fromConnectionString(config.AZURE_STORAGE_CONNECTION_STRING)
+
 const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME)
 
 // These identifiers must already have been authorised by the route before
@@ -15,7 +35,7 @@ function blobPathFor(teacherId, lessonId, studentId, fileName) {
     return `${teacherId}/${lessonId}/${studentId}/${fileName}`
 }
 
-export function generateUploadUrl(teacherId, lessonId, studentId, fileName) {
+export async function generateUploadUrl(teacherId, lessonId, studentId, fileName) {
     const blobPath = blobPathFor(
         teacherId,
         lessonId,
@@ -24,7 +44,7 @@ export function generateUploadUrl(teacherId, lessonId, studentId, fileName) {
     )
     const blockBlobClient = containerClient.getBlockBlobClient(blobPath)
 
-    return blockBlobClient.generateSasUrl({
+    const sasOptions = {
         permissions: BlobSASPermissions.from({
             create: true,
             write: true,
@@ -32,7 +52,33 @@ export function generateUploadUrl(teacherId, lessonId, studentId, fileName) {
         expiresOn: new Date(
             Date.now() + UPLOAD_SAS_TTL_MINUTES * 60 * 1000
         ),
-    })
+    }
+
+    // Two different SAS types, because the signing key differs with the
+    // credential. generateSasUrl() signs with the account key and is, per the
+    // SDK, "only available for BlobClient constructed with a shared key
+    // credential" — it cannot work under managed identity, where no account
+    // key exists in the process at all.
+    //
+    // The managed-identity equivalent is a user delegation SAS: ask Storage
+    // for a short-lived delegation key (itself authorised by the managed
+    // identity's Entra token), then sign with that. The resulting URL is the
+    // same shape and is used identically by the frontend.
+    //
+    // NOTE: this branch cannot be exercised locally — Azurite does not
+    // support Entra ID, so getUserDelegationKey() has no emulator
+    // equivalent. It is unverified until it runs against a real Storage
+    // account.
+    if (usingManagedIdentity) {
+        const now = new Date()
+        const delegationKey = await blobServiceClient.getUserDelegationKey(
+            now,
+            sasOptions.expiresOn
+        )
+        return blockBlobClient.generateUserDelegationSasUrl(sasOptions, delegationKey)
+    }
+
+    return blockBlobClient.generateSasUrl(sasOptions)
 }
 
 // Finds the most recently uploaded Blob for this student. Choosing the most

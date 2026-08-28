@@ -62,6 +62,13 @@ const textParam = (name, length, value) => {
     return { name, type: sql.NVarChar(length), value }
 }
 
+const uuidParam = (name, value) => {
+    if (typeof value !== 'string') {
+        throw new TypeError(`${name} must be a UUID string`)
+    }
+    return { name, type: sql.UniqueIdentifier, value }
+}
+
 // Execute against either the shared pool or an mssql Transaction. Accessor
 // method signatures remain unchanged: methods use the pool by default, while
 // transactional callers pass their Transaction as the optional executor `e`.
@@ -366,6 +373,67 @@ export const markingDb = {
             JOIN dbo.lessons AS l ON l.id = mr.lesson_id
             JOIN dbo.classes AS c ON c.id = l.class_id
             WHERE mr.lesson_id = @lessonId AND c.teacher_id = @teacherId
+        `, [
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ])).recordset,
+}
+
+// Durable lifecycle for asynchronous marking. The backend creates a queued
+// job before publishing it, then exposes the worker-owned status through an
+// ownership-scoped read route.
+export const markingJobDb = {
+    createQueued: async (teacherId, lessonId, studentId, e = pool) =>
+        (await exec(e, `
+            INSERT INTO dbo.marking_jobs (teacher_id, lesson_id, student_id, status)
+            OUTPUT CONVERT(NVARCHAR(36), INSERTED.job_id) AS job_id
+            VALUES (@teacherId, @lessonId, @studentId, N'queued')
+        `, [
+            intParam('teacherId', teacherId),
+            intParam('lessonId', lessonId),
+            intParam('studentId', studentId),
+        ])).recordset[0],
+
+    // If queue publication fails, remove the not-yet-published row so SQL
+    // does not claim that work is queued when Service Bus never accepted it.
+    deleteQueued: async (jobId, e = pool) =>
+        exec(e, `
+            DELETE FROM dbo.marking_jobs
+            WHERE job_id = @jobId AND status = N'queued'
+        `, [uuidParam('jobId', jobId)]),
+
+    listLatestForLesson: async (lessonId, teacherId, e = pool) =>
+        (await exec(e, `
+            WITH latest_jobs AS (
+                SELECT
+                    mj.job_id,
+                    mj.student_id,
+                    mj.status,
+                    mj.queued_at,
+                    mj.processing_at,
+                    mj.marking_at,
+                    mj.completed_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY mj.student_id
+                        ORDER BY mj.queued_at DESC, mj.job_id DESC
+                    ) AS row_number
+                FROM dbo.marking_jobs AS mj
+                JOIN dbo.lessons AS l ON l.id = mj.lesson_id
+                JOIN dbo.classes AS c ON c.id = l.class_id
+                WHERE mj.lesson_id = @lessonId
+                  AND mj.teacher_id = @teacherId
+                  AND c.teacher_id = @teacherId
+            )
+            SELECT
+                CONVERT(NVARCHAR(36), job_id) AS job_id,
+                student_id,
+                status,
+                queued_at,
+                processing_at,
+                marking_at,
+                completed_at
+            FROM latest_jobs
+            WHERE row_number = 1
         `, [
             intParam('lessonId', lessonId),
             intParam('teacherId', teacherId),

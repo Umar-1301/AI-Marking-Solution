@@ -5,12 +5,43 @@ import {
   getStudents,
   getLessonScheme,
   getResultPresence,
+  getMarkingJobStatuses,
   getUploadUrl,
   uploadToBlob,
   markStudentWork,
 } from '../services/api'
 
 const CIRCUMFERENCE = 2 * Math.PI * 26
+const ACTIVE_JOB_STATUSES = new Set(['queued', 'processing', 'marking'])
+const LOCAL_PRE_JOB_STATUSES = new Set(['uploading', 'uploaded', 'queueing', 'uploadError'])
+
+const jobStatusToUiStatus = status =>
+  status === 'complete' ? 'marked' : status
+
+function mergeJobStatuses(previous, jobs) {
+  const next = { ...previous }
+  let changed = false
+
+  for (const job of jobs) {
+    const current = next[job.studentId]
+
+    // An upload or queue request started in this tab is newer than a
+    // historical job returned by an overlapping status request.
+    if (LOCAL_PRE_JOB_STATUSES.has(current?.status)) continue
+    if (current?.jobId && current.jobId !== job.jobId) continue
+
+    const nextStatus = jobStatusToUiStatus(job.status)
+    if (current?.status === nextStatus && current?.jobId === job.jobId) continue
+
+    next[job.studentId] = {
+      status: nextStatus,
+      jobId: job.jobId,
+    }
+    changed = true
+  }
+
+  return changed ? next : previous
+}
 
 function ProgressRing({ marked, total }) {
   const progress = total > 0
@@ -70,11 +101,14 @@ function StudentMarking() {
 
   // Per-student statuses:
   // uploading   — the browser is PUTting the file to Blob Storage
-  // uploaded    — the Blob PUT succeeded; marking has not started
-  // marking     — Blob retrieval, AI marking, and persistence are running
-  // marked      — the backend confirmed the result was persisted
+  // uploaded    — the Blob PUT succeeded; queueing has not started
+  // queueing    — the backend is verifying and publishing the request
+  // queued      — the backend accepted the request into Service Bus
+  // processing  — the worker received the request and is preparing the file
+  // marking     — the worker dispatched the file to the AI service
+  // marked      — the worker persisted the result and completed the job
   // uploadError — the direct Blob upload failed
-  // failed      — backend marking failed; Retry is deliberately deferred
+  // failed      — the backend could not queue the request
   const [markStates, setMarkStates] = useState({})
   const [isMarkingRun, setIsMarkingRun] = useState(false)
 
@@ -100,26 +134,24 @@ function StudentMarking() {
       .catch(err => setSchemeError(err.message))
   }, [lessonId, navigate])
 
-  // Restore students that already have persisted marking results.
-  // Do not overwrite uploads or marking operations started in this tab.
+  // Restore completed results through the existing presence check and restore
+  // any persisted asynchronous job state through the new job table. An active
+  // newest job takes precedence over an older result during a re-mark.
   useEffect(() => {
     if (!lessonId || students.length === 0) return
 
     let cancelled = false
 
-    Promise.all(
-      students.map(student =>
-        getResultPresence(lessonId, student.id)
-          .then(present => ({
-            studentId: student.id,
-            present,
-          }))
-          .catch(() => ({
-            studentId: student.id,
-            present: false,
-          }))
-      )
-    ).then(checks => {
+    const presenceChecks = Promise.all(
+      students.map(student => getResultPresence(lessonId, student.id)
+        .then(present => ({ studentId: student.id, present }))
+        .catch(() => ({ studentId: student.id, present: false })))
+    )
+
+    Promise.all([
+      presenceChecks,
+      getMarkingJobStatuses(lessonId).catch(() => []),
+    ]).then(([checks, jobs]) => {
       if (cancelled) return
 
       setMarkStates(previous => {
@@ -131,7 +163,7 @@ function StudentMarking() {
           }
         }
 
-        return next
+        return mergeJobStatuses(next, jobs)
       })
     })
 
@@ -139,6 +171,40 @@ function StudentMarking() {
       cancelled = true
     }
   }, [lessonId, students])
+
+  const hasActiveJobs = Object.values(markStates)
+    .some(state => ACTIVE_JOB_STATUSES.has(state.status))
+
+  // Poll with separate short-lived requests while work is active. setTimeout
+  // is scheduled only after the previous request settles, so slow responses
+  // cannot create overlapping status checks.
+  useEffect(() => {
+    if (!lessonId || !hasActiveJobs) return
+
+    let cancelled = false
+    let timerId
+
+    const poll = async () => {
+      try {
+        const jobs = await getMarkingJobStatuses(lessonId)
+        if (!cancelled) {
+          setMarkStates(previous => mergeJobStatuses(previous, jobs))
+        }
+      } catch {
+        // A transient status-check failure must not discard the last durable
+        // state shown to the teacher; the next scheduled poll tries again.
+      } finally {
+        if (!cancelled) timerId = window.setTimeout(poll, 2000)
+      }
+    }
+
+    timerId = window.setTimeout(poll, 2000)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(timerId)
+    }
+  }, [lessonId, hasActiveJobs])
 
   if (notFound) {
     navigate('/', { replace: true })
@@ -216,20 +282,23 @@ function StudentMarking() {
     setIsMarkingRun(true)
 
     try {
-      // Process sequentially. Each student's complete Blob → AI → DB flow
-      // settles before the next student's request starts.
+      // Queue sequentially. Each student's HTTP request settles before the
+      // next request starts.
       for (const studentId of studentIdsToMark) {
         setMarkStates(previous => ({
           ...previous,
-          [studentId]: { status: 'marking' },
+          [studentId]: { status: 'queueing' },
         }))
 
         try {
-          await markStudentWork(lessonId, studentId)
+          const job = await markStudentWork(lessonId, studentId)
 
           setMarkStates(previous => ({
             ...previous,
-            [studentId]: { status: 'marked' },
+            [studentId]: {
+              status: 'queued',
+              jobId: job.jobId,
+            },
           }))
         } catch (err) {
           setMarkStates(previous => ({
@@ -441,6 +510,18 @@ function StudentMarking() {
                         <polyline points="20 6 9 17 4 12" />
                       </svg>
                     </button>
+                  ) : status === 'queueing' ? (
+                    <span className="student-marking-feedback-placeholder">
+                      Queueing…
+                    </span>
+                  ) : status === 'queued' ? (
+                    <span className="student-marking-feedback-placeholder">
+                      Queued
+                    </span>
+                  ) : status === 'processing' ? (
+                    <span className="student-marking-feedback-placeholder">
+                      Processing…
+                    </span>
                   ) : status === 'marking' ? (
                     <span className="student-marking-feedback-placeholder">
                       Marking…
@@ -469,7 +550,7 @@ function StudentMarking() {
                     <div className="student-result-row">
                       <span
                         className="student-mark-error"
-                        title={state.error || 'Marking failed'}
+                      title={state.error || 'Queueing failed'}
                       >
                         Failed
                       </span>
@@ -478,7 +559,7 @@ function StudentMarking() {
                         className="student-upload-btn"
                         type="button"
                         disabled
-                        title="Retry marking will be added in a later phase"
+                        title="Retry queueing will be added in a later phase"
                       >
                         Retry
                       </button>
@@ -506,7 +587,7 @@ function StudentMarking() {
         disabled={isMarkingRun || uploadedCount === 0}
         onClick={handleSubmit}
       >
-        {isMarkingRun ? 'Marking…' : 'Submit'}
+        {isMarkingRun ? 'Queueing…' : 'Submit'}
       </button>
 
       {!isMarkingRun && markedCount > 0 && (

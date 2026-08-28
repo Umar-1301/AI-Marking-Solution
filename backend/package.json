@@ -15,6 +15,7 @@
   "type": "module",
   "dependencies": {
     "@azure/identity": "^4.13.1",
+    "@azure/service-bus": "^7.9.5",
     "@azure/storage-blob": "^12.33.0",
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",

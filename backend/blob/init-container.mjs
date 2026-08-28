@@ -9,6 +9,14 @@
 import { BlobServiceClient } from '@azure/storage-blob'
 import config from '../src/config/index.js'
 
+if (!config.AZURE_STORAGE_CONNECTION_STRING) {
+    throw new Error(
+        'AZURE_STORAGE_CONNECTION_STRING is not set. This script is for the ' +
+        'local docker-compose Azurite container only, never for Azure — set ' +
+        'it in .env first (see .env.example).'
+    )
+}
+
 const CONTAINER_NAME = 'student-work'
 
 // Local dev only — the frontend origin allowed to PUT straight to blob

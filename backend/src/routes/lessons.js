@@ -3,7 +3,7 @@ import multer from 'multer'
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
-import { lessonDb, markingDb, classDb } from '../db/index.js'
+import { lessonDb, markingDb, markingJobDb, classDb } from '../db/index.js'
 import { makeFileSecurity } from '../middleware/fileSecurity.js'
 import { makeValidateFile } from '../middleware/validateFile.js'
 import { getOcrFromAI, getMarkFromAIWithSchemeText } from '../services/aiService.js'
@@ -24,6 +24,7 @@ import {
     findStudentUpload,
     downloadStudentWork,
 } from '../services/blobService.js'
+import { sendStudentMarkingRequest } from '../services/queueService.js'
 
 const router = express.Router()
 
@@ -342,6 +343,35 @@ router.get('/:lessonId/result_presence/:studentId', async (req, res, next) => {
     }
 })
 
+// GET /lessons/:lessonId/job-status — latest asynchronous marking attempt for
+// each student in this lesson. This is a short-lived authenticated status read;
+// the frontend calls it periodically while one or more jobs are active.
+router.get('/:lessonId/job-status', async (req, res, next) => {
+    const lessonId = Number(req.params.lessonId)
+
+    if (!Number.isSafeInteger(lessonId) || lessonId <= 0) {
+        return res.status(400).json({ error: 'Valid lesson ID is required' })
+    }
+
+    try {
+        const jobs = await markingJobDb.listLatestForLesson(lessonId, req.user.id)
+
+        res.json({
+            jobs: jobs.map(job => ({
+                jobId: job.job_id,
+                studentId: job.student_id,
+                status: job.status,
+                queuedAt: job.queued_at,
+                processingAt: job.processing_at,
+                markingAt: job.marking_at,
+                completedAt: job.completed_at,
+            })),
+        })
+    } catch (err) {
+        next(err)
+    }
+})
+
 // POST /lessons/:lessonId/students/:studentId/upload-url — mint a
 // short-lived, write-only SAS URL scoped to exactly this student's blob
 // path. The frontend PUTs the file straight to blob storage with it; the
@@ -366,8 +396,10 @@ router.post('/:lessonId/students/:studentId/upload-url', async (req, res, next) 
     }
 })
 
-// POST /lessons/:lessonId/mark-student — upload one student's work, get AI
-// marking against the already-extracted scheme, persist the result.
+// POST /lessons/:lessonId/mark-student — verify the authenticated teacher,
+// lesson, student and uploaded work, then hand the request to the marking
+// worker through Service Bus. Marking is deliberately no longer performed by
+// the HTTP request.
 router.post('/:lessonId/mark-student', async (req, res, next) => {
     const lessonId = Number(req.params.lessonId)
     const studentId = Number(req.body.studentId)
@@ -420,43 +452,37 @@ router.post('/:lessonId/mark-student', async (req, res, next) => {
             })
         }
 
-        const fileBuffer = await downloadStudentWork(
-            upload.blobName
+        // Create the durable row first so the worker can update it immediately
+        // even if it receives the Service Bus message before this route returns.
+        // If publication fails, remove the still-queued row below.
+        const job = await markingJobDb.createQueued(
+            teacherId,
+            lessonId,
+            studentId
         )
-        logBlobRetrieved(req, upload.fileName, fileBuffer.length)
 
-        const file = {
-            buffer: fileBuffer,
-            originalname: upload.fileName,
-            mimetype: upload.mimeType
+        try {
+            await sendStudentMarkingRequest({
+                jobId: job.job_id,
+                teacherId,
+                lessonId,
+                studentId,
+            })
+        } catch (queueError) {
+            try {
+                await markingJobDb.deleteQueued(job.job_id)
+            } catch (cleanupError) {
+                queueError.jobCleanupError = cleanupError
+            }
+            throw queueError
         }
 
-        const question = ocrRow.question ?? ''
-        const scheme = resolveScheme(ocrRow)
-
-        logMarkAiDispatched(req)
-        const aiStart = Date.now()
-        const aiResult = await getMarkFromAIWithSchemeText(
-            file,
-            scheme,
-            question
-        )
-        logMarkAiReturned(req, Date.now() - aiStart)
-
-        const santized = sanitizeAIResult(aiResult)
-
-        await markingDb.markStudent(
-            studentId,
-            lessonId,
-            file.originalname,
-            file.mimetype,
-            aiResult.student_ocr_text ?? '',
-            JSON.stringify(santized)
-        )
-        logMarkStored(req, lessonId, studentId)
-
-        res.json({
+        res.status(202).json({
             ok: true,
+            queued: true,
+            jobId: job.job_id,
+            status: 'queued',
+            requestId: req._requestId,
             studentId,
         })
 
@@ -483,4 +509,3 @@ router.post('/:lessonId/mark-student', async (req, res, next) => {
 })
 
 export default router
-

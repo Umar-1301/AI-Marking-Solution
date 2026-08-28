@@ -140,6 +140,18 @@ export async function getResultPresence(lessonId, studentId) {
     return data.present
 }
 
+// Returns the newest persisted marking job for each student in a lesson.
+// The request itself is short-lived; StudentMarking repeats it only while at
+// least one job is queued, processing, or marking.
+export async function getMarkingJobStatuses(lessonId) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/job-status`, {
+        credentials: 'include',
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to check marking job status')
+    return data.jobs
+}
+
 export async function getMarkingResults(lessonId) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/results`, { credentials: 'include' })
     const data = await response.json()
@@ -185,7 +197,7 @@ export async function uploadToBlob(uploadUrl, file) {
     console.info(`[blob] uploaded ${file.name} (${file.size} bytes)`)
 }
 
-// Triggers marking for work already stored in Blob Storage.
+// Queues a marking request for work already stored in Blob Storage.
 // Only identifiers cross this request; teacherId comes from the JWT cookie.
 export async function markStudentWork(lessonId, studentId) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/mark-student`, {
@@ -205,7 +217,7 @@ export async function markStudentWork(lessonId, studentId) {
     }
 
     const data = await response.json()
-    if (!response.ok) throw new Error(data.error || 'Failed to mark student work')
+    if (!response.ok) throw new Error(data.error || 'Failed to queue student work')
     return data
 }
 
@@ -283,4 +295,3 @@ export async function refreshSession() {
     if (!response.ok) return null
     return response.json()
 }
-
