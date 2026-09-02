@@ -1,4 +1,16 @@
-function ResultCard({ result }) {
+function descriptorsForBreakdownItem(scheme, item) {
+  const objectives = scheme?.assessment_objectives
+  if (!Array.isArray(objectives)) return []
+
+  const objective = objectives.find(ao => ao?.ao === item.section)
+  const bands = objective?.bands
+  if (!Array.isArray(bands)) return []
+
+  const band = bands.find(candidate => candidate?.band === item.awardedBand)
+  return Array.isArray(band?.descriptors) ? band.descriptors : []
+}
+
+function ResultCard({ result, scheme }) {
   const percentage = result.percentage ?? Math.round((result.score / result.maxScore) * 100)
 
   const getGradeColour = (pct) => {
@@ -59,9 +71,28 @@ function ResultCard({ result }) {
           <div className="section-label">Breakdown</div>
           {result.breakdown.map((item, index) => {
             const itemPct = Math.round((item.marks / item.maxMarks) * 100)
+            const descriptors = descriptorsForBreakdownItem(scheme, item)
             return (
               <div key={index} className="breakdown-item">
-                <span className="breakdown-name">{item.section}</span>
+                <div className="breakdown-criterion">
+                  <span className="breakdown-name">{item.section}</span>
+                  {descriptors.length > 0 && (
+                    <ul className="breakdown-descriptors">
+                      {descriptors.map((descriptor, descriptorIndex) => {
+                        const isStructured = descriptor && typeof descriptor === 'object'
+                        const text = isStructured ? descriptor.text : descriptor
+                        const id = isStructured ? descriptor.id : null
+
+                        return (
+                          <li key={id ?? descriptorIndex} className="breakdown-descriptor">
+                            {id && <code className="breakdown-descriptor-id">{id}</code>}
+                            <span>{text}</span>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  )}
+                </div>
                 <div className="breakdown-bar-track">
                   <div
                     className="breakdown-bar-fill"

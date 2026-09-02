@@ -2446,8 +2446,30 @@ body::after {
   font-size: 0.87rem;
   font-weight: 500;
   color: var(--text-secondary);
+  min-width: 0;
+}
+
+.breakdown-criterion {
   flex: 1;
   min-width: 0;
+}
+
+.breakdown-descriptors {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1.45;
+}
+
+.breakdown-descriptor + .breakdown-descriptor {
+  margin-top: 4px;
+}
+
+.breakdown-descriptor-id {
+  margin-right: 6px;
+  color: var(--accent);
+  font-size: 0.7rem;
 }
 
 .breakdown-bar-track {
@@ -4230,6 +4252,10 @@ body::after {
   border-right: 1px solid var(--border);
 }
 
+.annotated-essay-text--full {
+  border-right: 0;
+}
+
 .annotated-essay-prose {
   font-size: 0.88rem;
   line-height: 1.85;
@@ -4333,3 +4359,199 @@ body::after {
   opacity: 0.8;
 }
 
+/* ── Descriptor evidence ───────────────────────────────────────────────── */
+.descriptor-evidence-wrap {
+  margin-top: 20px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  background: var(--card);
+}
+
+/* ── Actionable steps ──────────────────────────────────────────────────── */
+.actionable-steps {
+  margin-top: 20px;
+  padding: 22px 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--card);
+}
+
+.actionable-steps .annotated-section-label {
+  margin-bottom: 12px;
+}
+
+.actionable-steps-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding-left: 24px;
+  color: var(--text-secondary);
+}
+
+.actionable-steps-list li {
+  padding-left: 5px;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.actionable-steps-list li::marker {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.descriptor-evidence-body {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  align-items: start;
+}
+
+.descriptor-evidence-text {
+  position: relative;
+  z-index: 1;
+  padding: 24px;
+  border-right: 1px solid var(--border);
+}
+
+.descriptor-evidence-sidebar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+}
+
+.descriptor-evidence-connectors {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.descriptor-evidence-connectors path {
+  fill: none;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 3 4;
+  opacity: 0.76;
+}
+
+.descriptor-evidence-highlight {
+  position: relative;
+  z-index: 2;
+  border-bottom: 2px solid;
+  border-radius: 3px;
+  padding: 1px 0;
+}
+
+.descriptor-evidence-badge,
+.descriptor-evidence-card-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  color: #fff;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.descriptor-evidence-badge {
+  margin-left: 3px;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
+}
+
+.descriptor-evidence-card {
+  position: relative;
+  z-index: 2;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--evidence-colour);
+  border-radius: 10px;
+  padding: 13px 14px;
+  background: var(--bg);
+}
+
+.descriptor-evidence-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 10px;
+}
+
+.descriptor-evidence-card-id {
+  color: var(--text);
+  font-size: 0.73rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.descriptor-evidence-status {
+  margin-left: auto;
+  max-width: 120px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-align: right;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.descriptor-evidence-explanation,
+.descriptor-evidence-judgement p,
+.descriptor-evidence-unmatched-note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.descriptor-evidence-judgement {
+  margin-top: 11px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.descriptor-evidence-judgement > span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.descriptor-evidence-unmatched-note {
+  margin-top: 10px;
+  color: #fbbf24;
+  font-size: 0.72rem;
+}
+
+@media (max-width: 900px) {
+  .descriptor-evidence-body {
+    grid-template-columns: 1fr;
+  }
+
+  .descriptor-evidence-text {
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .descriptor-evidence-connectors {
+    display: none;
+  }
+}

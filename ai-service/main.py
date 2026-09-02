@@ -18,11 +18,26 @@ from fastapi import FastAPI, File, Form, UploadFile
 # Add parent directory to path so we can find llm_service and ocr_service
 sys.path.append(str(Path(__file__).parent))
 
-from llm_service import generate_llm_response, extract_mark_scheme
+from llm_service import (
+    DescriptorContentIntegrityError,
+    DescriptorValidationError,
+    extract_mark_scheme,
+    generate_llm_response,
+)
 from ocr_service import extract_text_from_file
 from rag_service import add_exemplar, get_similar, list_exemplars, delete_exemplar
 from security import ms_ocr_sanitisation
-from observability.event_log import log_security_stripped
+from validation.descriptor_id_enrichment import add_descriptor_ids
+from validation.descriptor_integrity_validation import (
+    validate_descriptor_content_integrity,
+)
+from validation.descriptor_validation import validate_descriptor_shapes
+from validation.mark_int_validation import validate_mark_totals
+from observability.event_log import (
+    log_descriptor_validation_issues,
+    log_mark_total_corrections,
+    log_security_stripped,
+)
 
 # When Umar's Chandra OCR is available, swap these two lines back in:
 # from model.marker import run_marking
@@ -67,6 +82,41 @@ async def ocr_file(file: UploadFile = File(...)):
     # call only, never part of the mark scheme content itself.
     wrapped_text, token = ms_ocr_sanitisation.wrap_for_prompt(clean_text)
     structured_scheme   = extract_mark_scheme(wrapped_text, token)
+
+    # Keep descriptor validation as deliberately separate layers. The boundary
+    # check verifies that the application and model found the same points;
+    # content integrity verifies that joining the model points preserves the
+    # complete raw descriptor text. Only then can deterministic IDs be added.
+    descriptor_shape_issues = validate_descriptor_shapes(structured_scheme)
+    if descriptor_shape_issues:
+        log_descriptor_validation_issues(descriptor_shape_issues)
+        raise DescriptorValidationError(
+            "Extracted descriptor boundaries did not match the source descriptor"
+        )
+
+    descriptor_content_issues = validate_descriptor_content_integrity(
+        structured_scheme
+    )
+    if descriptor_content_issues:
+        log_descriptor_validation_issues(descriptor_content_issues)
+        raise DescriptorContentIntegrityError(
+            "Extracted descriptor content did not match the raw descriptor"
+        )
+
+    structured_scheme, descriptor_id_issues = add_descriptor_ids(
+        structured_scheme
+    )
+    if descriptor_id_issues:
+        log_descriptor_validation_issues(descriptor_id_issues)
+        raise DescriptorValidationError(
+            "Descriptor provenance IDs could not be generated safely"
+        )
+
+    # This operates after all descriptor transformations so the object returned
+    # by /ocr has passed every deterministic post-extraction validation.
+    structured_scheme, corrections = validate_mark_totals(structured_scheme)
+    if corrections:
+        log_mark_total_corrections(corrections)
 
     return {"text": clean_text, "structured_scheme": structured_scheme}
 
@@ -125,6 +175,7 @@ async def mark_with_scheme_text(
         "strengths":                raw.get("strengths", []),
         "improvements":             raw.get("improvements", []),
         "actionable_steps":         raw.get("actionable_steps", []),
+        "rubric_breakdown":         raw.get("rubric_breakdown", []),
         "student_ocr_text":         student_text,
         "teacher_review_required":  raw.get("teacher_review_required", False),
         "question_mismatch":        raw.get("question_mismatch", False),

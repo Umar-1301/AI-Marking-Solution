@@ -7,7 +7,6 @@ import { lessonDb, markingDb, markingJobDb, classDb } from '../db/index.js'
 import { makeFileSecurity } from '../middleware/fileSecurity.js'
 import { makeValidateFile } from '../middleware/validateFile.js'
 import { getOcrFromAI, getMarkFromAIWithSchemeText } from '../services/aiService.js'
-import { sanitizeAIResult } from '../utils/sanitize.js'
 import { sanitiseOcrText } from '../middleware/inputSecurity.js'
 import {
     logOcrStart, logFileInfo, logAiDispatched,

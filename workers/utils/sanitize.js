@@ -29,9 +29,33 @@ export function sanitizeAIResult(raw) {
             .map(item => safeText(item, { maxLength: 500 }))
         : []
 
-    const strengths = sanitizeList(raw.strengths)
-    const improvements = sanitizeList(raw.improvements)
     const actionableSteps = sanitizeList(raw.actionable_steps)
+
+    const sanitizeDescriptorEvidence = (items) => Array.isArray(items)
+        ? items
+            .filter(item => item && typeof item === 'object')
+            .slice(0, 3)
+            .map(item => ({
+                quote: safeText(item.quote, { maxLength: 500 }),
+                explanation: safeText(item.explanation, { maxLength: 1000 }),
+            }))
+        : []
+
+    const sanitizeAwardedBandEvidence = (items) => Array.isArray(items)
+        ? items
+            .filter(item => item && typeof item === 'object' && item.descriptor_id)
+            .map(item => {
+                const status = safeText(item.status, { maxLength: 30 }).toLowerCase()
+                return {
+                    descriptorId: safeText(item.descriptor_id, { maxLength: 100 }),
+                    status: ["met", "partially_met", "not_met"].includes(status)
+                        ? status
+                        : "not_met",
+                    evidence: sanitizeDescriptorEvidence(item.evidence),
+                    judgement: safeText(item.judgement, { maxLength: 1000 }),
+                }
+            })
+        : []
 
     const breakdown = Array.isArray(raw.rubric_breakdown)
         ? raw.rubric_breakdown
@@ -41,8 +65,15 @@ export function sanitizeAIResult(raw) {
                 const marks = safeInt(item.score_awarded, { min: 0, max: maxMarks })
                 return {
                     section: safeText(item.criterion, { maxLength: 200, fallback: 'Section' }),
+                    awardedBand: safeText(item.awarded_band, { maxLength: 100 }),
                     marks,
                     maxMarks,
+                    evidenceSupportingAwardedBand: sanitizeAwardedBandEvidence(
+                        item.evidence_supporting_awarded_band
+                    ),
+                    nextBandRequirementNotMet: item.next_band_requirement_not_met === null
+                        ? null
+                        : safeText(item.next_band_requirement_not_met, { maxLength: 500 }),
                     reason: safeText(item.reason, { maxLength: 500 }),
                 }
             })
@@ -53,30 +84,15 @@ export function sanitizeAIResult(raw) {
     const questionMismatchReason = safeText(raw.question_mismatch_reason ?? '', { maxLength: 500 })
     const studentOcrText = safeText(raw.student_ocr_text ?? '', { maxLength: 20000 })
 
-    const annotations = Array.isArray(raw.annotations)
-        ? raw.annotations
-            .filter(annotation => annotation && typeof annotation === 'object' && annotation.quote && annotation.comment)
-            .slice(0, 10)
-            .map(annotation => ({
-                quote: safeText(annotation.quote, { maxLength: 500 }),
-                comment: safeText(annotation.comment, { maxLength: 1000 }),
-                type: annotation.type === 'strength' ? 'strength' : 'improvement',
-            }))
-        : []
-
     return {
         score,
         maxScore,
         percentage,
         breakdown,
-        strengths,
-        improvements,
         actionableSteps,
         teacherReviewRequired,
         questionMismatch,
         questionMismatchReason,
         studentOcrText,
-        annotations,
     }
 }
-

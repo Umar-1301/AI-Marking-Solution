@@ -63,6 +63,9 @@ workers/logs/*
 
 # Ad-hoc debug output — temporary inspection only, never committed.
 backend/.tmp/
+# Descriptor validation comparison dumps. Contains verbatim mark-scheme
+# descriptor text (exam board material) and grows per band, per extraction.
+ai-service/observability/descriptor_validation_debug.txt
 
 # OS
 **/.DS_Store

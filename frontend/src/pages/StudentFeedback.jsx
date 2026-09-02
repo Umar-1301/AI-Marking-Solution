@@ -1,8 +1,19 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { getLesson, getStudents, getMarkingResults } from '../services/api'
+import { getLesson, getLessonScheme, getStudents, getMarkingResults } from '../services/api'
 import ResultCard from '../components/ResultCard'
 import AnnotatedEssay from '../components/AnnotatedEssay'
+import DescriptorEvidenceEssay from '../components/DescriptorEvidenceEssay'
+
+function hasDescriptorEvidence(breakdown) {
+  return (breakdown ?? []).some(criterion => {
+    const descriptorEvidence = criterion.evidenceSupportingAwardedBand
+      ?? criterion.evidence_supporting_awarded_band
+      ?? []
+
+    return descriptorEvidence.some(descriptor => Array.isArray(descriptor.evidence) && descriptor.evidence.length > 0)
+  })
+}
 
 function StudentFeedback() {
   const { lessonId } = useParams()
@@ -14,6 +25,7 @@ function StudentFeedback() {
   const [resultsLoading, setResultsLoading] = useState(true)
   const [resultsError,   setResultsError]   = useState(null)
   const [notFound,       setNotFound]       = useState(false)
+  const [schemeData,     setSchemeData]     = useState(null)
   const [expanded, setExpanded] = useState({})
 
   // Same direct-visit/refresh pattern as StudentMarking: re-derive everything
@@ -28,6 +40,12 @@ function StudentFeedback() {
       })
       .then(setStudents)
       .catch(() => setNotFound(true))
+
+    // The selected question's stored scheme supplies the descriptor text and
+    // IDs shown beside the matching AO in each student's breakdown.
+    getLessonScheme(lessonId)
+      .then(setSchemeData)
+      .catch(() => setSchemeData(null))
 
     // /results only ever returns rows that have actually been marked — this
     // page shows exactly that set, nothing invented for unmarked students.
@@ -80,6 +98,7 @@ function StudentFeedback() {
         ) : (
           results.map(r => {
             const isExpanded = expanded[r.studentId]
+            const actionableSteps = r.result.actionableSteps ?? r.result.actionable_steps ?? []
 
             return (
               <div key={r.studentId} className="student-marking-row">
@@ -98,12 +117,29 @@ function StudentFeedback() {
 
                 {isExpanded && (
                   <div className="student-result-expanded">
-                    <ResultCard result={r.result} />
-                    {r.result.studentOcrText && r.result.annotations?.length > 0 && (
-                      <AnnotatedEssay
-                        text={r.result.studentOcrText}
-                        annotations={r.result.annotations}
-                      />
+                    <ResultCard result={r.result} scheme={schemeData?.scheme} />
+                    {r.result.studentOcrText && (
+                      hasDescriptorEvidence(r.result.breakdown) ? (
+                        <DescriptorEvidenceEssay
+                          text={r.result.studentOcrText}
+                          breakdown={r.result.breakdown}
+                        />
+                      ) : (
+                        <AnnotatedEssay
+                          text={r.result.studentOcrText}
+                          annotations={r.result.annotations ?? []}
+                        />
+                      )
+                    )}
+                    {actionableSteps.length > 0 && (
+                      <section className="actionable-steps" aria-label="Actionable next steps">
+                        <div className="annotated-section-label">Actionable Steps</div>
+                        <ol className="actionable-steps-list">
+                          {actionableSteps.map((step, index) => (
+                            <li key={`${r.studentId}-step-${index}`}>{step}</li>
+                          ))}
+                        </ol>
+                      </section>
                     )}
                   </div>
                 )}

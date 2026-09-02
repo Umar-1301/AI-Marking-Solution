@@ -121,12 +121,14 @@ function AnnotatedEssay({ text, annotations }) {
     .map((a, i) => ({ ...a, idx: i }))
     .filter(a => !usedIndices.has(a.idx))
 
+  const hasComments = numberedHighlights.length > 0 || unfound.length > 0
+
   let renderNum = 0
 
   return (
     <div className="annotated-essay-wrap">
       <div className="annotated-essay-body">
-        <div className="annotated-essay-text">
+        <div className={`annotated-essay-text${hasComments ? '' : ' annotated-essay-text--full'}`}>
           <div className="annotated-section-label">Student Response</div>
           <div className="annotated-essay-prose">
             {segments.map((seg, i) => {
@@ -153,43 +155,45 @@ function AnnotatedEssay({ text, annotations }) {
           </div>
         </div>
 
-        <div className="annotated-essay-sidebar">
-          <div className="annotated-section-label">Examiner Comments</div>
-          {numberedHighlights.map(ann => (
-            <div
-              key={ann.idx}
-              className="annotation-card"
-              style={{ borderLeft: `3px solid ${ann.color.border}` }}
-            >
-              <div className="annotation-card-header">
-                <span
-                  className="annotation-card-num"
-                  style={{ background: ann.color.border }}
-                >{ann.num}</span>
-                <span className={`annotation-card-type annotation-type-${ann.type}`}>
-                  {ann.type === 'strength' ? 'Strength' : 'Improvement'}
-                </span>
+        {hasComments && (
+          <div className="annotated-essay-sidebar">
+            <div className="annotated-section-label">Examiner Comments</div>
+            {numberedHighlights.map(ann => (
+              <div
+                key={ann.idx}
+                className="annotation-card"
+                style={{ borderLeft: `3px solid ${ann.color.border}` }}
+              >
+                <div className="annotation-card-header">
+                  <span
+                    className="annotation-card-num"
+                    style={{ background: ann.color.border }}
+                  >{ann.num}</span>
+                  <span className={`annotation-card-type annotation-type-${ann.type}`}>
+                    {ann.type === 'strength' ? 'Strength' : 'Improvement'}
+                  </span>
+                </div>
+                <p className="annotation-card-comment">{ann.comment}</p>
               </div>
-              <p className="annotation-card-comment">{ann.comment}</p>
-            </div>
-          ))}
-          {unfound.map((ann, i) => (
-            <div
-              key={`unfound-${i}`}
-              className="annotation-card annotation-card-unfound"
-            >
-              <div className="annotation-card-header">
-                <span className={`annotation-card-type annotation-type-${ann.type}`}>
-                  {ann.type === 'strength' ? 'Strength' : 'Improvement'}
-                </span>
+            ))}
+            {unfound.map((ann, i) => (
+              <div
+                key={`unfound-${i}`}
+                className="annotation-card annotation-card-unfound"
+              >
+                <div className="annotation-card-header">
+                  <span className={`annotation-card-type annotation-type-${ann.type}`}>
+                    {ann.type === 'strength' ? 'Strength' : 'Improvement'}
+                  </span>
+                </div>
+                {ann.quote && (
+                  <p className="annotation-card-quote">"{ann.quote}"</p>
+                )}
+                <p className="annotation-card-comment">{ann.comment}</p>
               </div>
-              {ann.quote && (
-                <p className="annotation-card-quote">"{ann.quote}"</p>
-              )}
-              <p className="annotation-card-comment">{ann.comment}</p>
-            </div>
-          ))}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

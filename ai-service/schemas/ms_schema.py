@@ -26,6 +26,7 @@ class Band(StrictBaseModel):
     band: str
     marks: str
     descriptor: str
+    descriptors: list[str]
 
 
 class AssessmentObjective(StrictBaseModel):
