@@ -29,6 +29,12 @@ class Band(StrictBaseModel):
     descriptors: list[str]
 
 
+class BandConstraint(StrictBaseModel):
+    ao: str
+    description: str
+    affected_bands: list[str]
+
+
 class AssessmentObjective(StrictBaseModel):
     ao: str
     marks_available: int | NotFound
@@ -41,6 +47,7 @@ class Question(StrictBaseModel):
     marks: int | NotFound
     description: str
     assessment_objectives: list[AssessmentObjective]
+    band_constraints: list[BandConstraint]
 
 
 class MarkSchemeExtraction(StrictBaseModel):

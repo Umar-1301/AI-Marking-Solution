@@ -69,6 +69,13 @@ const textParam = (name, length, value) => {
     return { name, type: sql.NVarChar(length), value }
 }
 
+const nullableTextParam = (name, length, value) => {
+    if (value !== null && typeof value !== 'string') {
+        throw new TypeError(`${name} must be a string or null`)
+    }
+    return { name, type: sql.NVarChar(length), value }
+}
+
 const uuidParam = (name, value) => {
     if (typeof value !== 'string') {
         throw new TypeError(`${name} must be a UUID string`)
@@ -103,7 +110,8 @@ async function inTransaction(work) {
 }
 
 const SQL_LESSON_OCR_TEXT = `
-    SELECT t.ocr_text, t.structured_scheme, t.selected_question_index
+    SELECT t.ocr_text, t.structured_scheme, t.thread_extraction,
+           t.selected_question_index
     FROM dbo.teacher_ocr AS t
     JOIN dbo.lessons AS l ON t.lesson_id = l.id
     JOIN dbo.classes AS c ON l.class_id = c.id
@@ -203,7 +211,8 @@ export const markingDb = {
         fileName,
         mimeType,
         ocrText,
-        gradeJson
+        gradeJson,
+        segmentationGradeJson
     ) =>
         inTransaction(async (transaction) => {
             const existing = (await exec(transaction, `
@@ -255,13 +264,20 @@ export const markingDb = {
             ])).recordset[0]
 
             await exec(transaction, `
-                INSERT INTO dbo.marking_results (lesson_id, student_id, ocr_id, student_grade)
-                VALUES (@lessonId, @studentId, @ocrId, @grade)
+                INSERT INTO dbo.marking_results (
+                    lesson_id,
+                    student_id,
+                    ocr_id,
+                    student_grade,
+                    segmentation_grade
+                )
+                VALUES (@lessonId, @studentId, @ocrId, @grade, @segmentationGrade)
             `, [
                 intParam('lessonId', lessonId),
                 intParam('studentId', studentId),
                 intParam('ocrId', ocr.id),
                 textParam('grade', sql.MAX, gradeJson),
+                nullableTextParam('segmentationGrade', sql.MAX, segmentationGradeJson),
             ])
 
             const completed = await exec(transaction, `

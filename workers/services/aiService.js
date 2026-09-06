@@ -3,13 +3,19 @@ import fetch from 'node-fetch'
 
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8000'
 
-export async function getMarkFromAIWithSchemeText(studentWorkFile, schemeText, question = '') {
+export async function getMarkFromAIWithSchemeText(
+    studentWorkFile,
+    schemeText,
+    threadExtraction = '',
+    question = ''
+) {
     const form = new FormData()
     form.append('student_work', studentWorkFile.buffer, {
         filename: studentWorkFile.originalname,
         contentType: studentWorkFile.mimetype,
     })
     form.append('scheme_text', schemeText)
+    form.append('thread_extraction', threadExtraction)
     form.append('question', question)
 
     let response
@@ -39,4 +45,3 @@ export async function getMarkFromAIWithSchemeText(studentWorkFile, schemeText, q
 
     return response.json()
 }
-

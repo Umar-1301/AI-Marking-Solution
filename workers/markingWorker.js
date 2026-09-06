@@ -33,6 +33,23 @@ function resolveScheme(ocrRow) {
     return question ? JSON.stringify(question) : ocrRow.ocr_text
 }
 
+function resolveThreadExtraction(ocrRow) {
+    if (!ocrRow.thread_extraction) return ''
+
+    let extractedThreads
+    try { extractedThreads = JSON.parse(ocrRow.thread_extraction) } catch { return '' }
+
+    const questions = extractedThreads?.questions
+    if (!questions || typeof questions !== 'object' || Array.isArray(questions)) return ''
+
+    const selectedQuestion = getSelectedQuestion(ocrRow)
+    const selectedQuestionNumber = selectedQuestion?.question_number
+    if (!selectedQuestionNumber) return ''
+
+    const selectedThreadExtraction = questions[selectedQuestionNumber]
+    return selectedThreadExtraction ? JSON.stringify(selectedThreadExtraction) : ''
+}
+
 export async function processMarkingRequest(job) {
     const { jobId, teacherId, lessonId, studentId } = job ?? {}
     logMarkStart(job)
@@ -69,6 +86,7 @@ export async function processMarkingRequest(job) {
 
     const question = ocrRow.question ?? ''
     const scheme = resolveScheme(ocrRow)
+    const threadExtraction = resolveThreadExtraction(ocrRow)
 
     await markingJobDb.markMarking(
         jobId,
@@ -79,10 +97,16 @@ export async function processMarkingRequest(job) {
 
     logMarkAiDispatched(job)
     const aiStart = Date.now()
-    const aiResult = await getMarkFromAIWithSchemeText(file, scheme, question)
+    const aiResult = await getMarkFromAIWithSchemeText(
+        file,
+        scheme,
+        threadExtraction,
+        question
+    )
     logMarkAiReturned(job, Date.now() - aiStart)
 
     const sanitized = sanitizeAIResult(aiResult)
+    const { segmentation, ...holisticGrade } = sanitized
 
     await markingDb.markStudent(
         jobId,
@@ -92,7 +116,8 @@ export async function processMarkingRequest(job) {
         file.originalname,
         file.mimetype,
         aiResult.student_ocr_text ?? '',
-        JSON.stringify(sanitized)
+        JSON.stringify(holisticGrade),
+        segmentation ? JSON.stringify(segmentation) : null
     )
     logMarkStored(job)
 }

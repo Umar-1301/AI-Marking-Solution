@@ -150,7 +150,8 @@ const SQL_LESSON_CLASS_CHECK = `
 // once here, reused by every endpoint that needs any piece of this data
 // (GET /:id/ocr, GET /:id/questions) rather than each running its own query.
 const SQL_LESSON_OCR_TEXT = `
-    SELECT t.ocr_text, t.structured_scheme, t.selected_question_index
+    SELECT t.ocr_text, t.structured_scheme, t.thread_extraction,
+           t.selected_question_index
     FROM dbo.teacher_ocr AS t
     JOIN dbo.lessons AS l ON t.lesson_id = l.id
     JOIN dbo.classes AS c ON l.class_id = c.id
@@ -163,7 +164,7 @@ const SQL_LESSON_OCR_TEXT = `
 // than resuming the old one.
 const SQL_LESSON_SCHEME_FOR_REUSE = `
     SELECT l.lesson_title, l.mark_scheme_file_name, l.mark_scheme_mime_type,
-           t.ocr_text, t.structured_scheme
+           t.ocr_text, t.structured_scheme, t.thread_extraction
     FROM dbo.teacher_ocr AS t
     JOIN dbo.lessons AS l ON t.lesson_id = l.id
     JOIN dbo.classes AS c ON l.class_id = c.id
@@ -217,11 +218,18 @@ export const lessonDb = {
             intParam('teacherId', teacherId),
         ]),
 
-    // Insert the lesson and OCR row, then link them atomically. structuredScheme
-    // comes from the mark-scheme extraction step (main.py's /ocr, via
-    // extract_mark_scheme) — stored so per-student marking calls can reuse it
-    // instead of re-extracting.
-    createLesson: async (lessonTitle, classId, fileName, mimeType, ocrText, structuredScheme) =>
+    // Insert the lesson and OCR row, then link them atomically. Both extracted
+    // scheme representations come from main.py's /ocr and are stored for
+    // future marking and segmentation work.
+    createLesson: async (
+        lessonTitle,
+        classId,
+        fileName,
+        mimeType,
+        ocrText,
+        structuredScheme,
+        threadExtraction
+    ) =>
         inTransaction(async (transaction) => {
             const lesson = (await exec(transaction, `
                 INSERT INTO dbo.lessons (
@@ -240,14 +248,45 @@ export const lessonDb = {
             ])).recordset[0]
 
             const ocr = (await exec(transaction, `
-                INSERT INTO dbo.teacher_ocr (lesson_id, ocr_text, structured_scheme)
+                INSERT INTO dbo.teacher_ocr (
+                    lesson_id,
+                    ocr_text,
+                    structured_scheme,
+                    thread_extraction
+                )
                 OUTPUT INSERTED.id
-                VALUES (@lessonId, @ocrText, @structuredScheme)
+                VALUES (
+                    @lessonId,
+                    @ocrText,
+                    @structuredScheme,
+                    @threadExtraction
+                )
             `, [
                 intParam('lessonId', lesson.id),
                 textParam('ocrText', sql.MAX, ocrText),
                 textParam('structuredScheme', sql.MAX, structuredScheme ?? ''),
+                textParam('threadExtraction', sql.MAX, threadExtraction ?? ''),
             ])).recordset[0]
+
+            console.log('\n[THREAD EXTRACTION][BACKEND] Binding SQL thread_extraction input')
+            console.log(JSON.stringify({
+                teacher_ocr_id: ocr.id,
+                thread_extraction_characters: (threadExtraction ?? '').length,
+                thread_extraction_sql_value: threadExtraction ?? '',
+            }, null, 2))
+
+            const storedThreadExtraction = (await exec(transaction, `
+                SELECT
+                    DATALENGTH(thread_extraction) AS thread_extraction_bytes,
+                    thread_extraction
+                FROM dbo.teacher_ocr
+                WHERE id = @ocrId
+            `, [
+                intParam('ocrId', ocr.id),
+            ])).recordset[0]
+
+            console.log('[THREAD EXTRACTION][BACKEND] SQL readback after INSERT')
+            console.log(JSON.stringify(storedThreadExtraction, null, 2))
 
             await exec(transaction, `
                 UPDATE dbo.lessons
@@ -368,7 +407,7 @@ export const markingDb = {
     // Fetch all marking results for a lesson, scoped to the teacher's own classes.
     getResults: async (lessonId, teacherId, e = pool) =>
         (await exec(e, `
-            SELECT mr.student_id, mr.student_grade, mr.marked_at
+            SELECT mr.student_id, mr.student_grade, mr.segmentation_grade, mr.marked_at
             FROM dbo.marking_results AS mr
             JOIN dbo.lessons AS l ON l.id = mr.lesson_id
             JOIN dbo.classes AS c ON c.id = l.class_id

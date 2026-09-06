@@ -1,10 +1,18 @@
+import json
 import os
 from openai import OpenAI, LengthFinishReasonError, ContentFilterFinishReasonError
 from dotenv import load_dotenv
 from prompts import SYSTEM_PROMPT, build_user_prompt, EXTRACTION_SYSTEM_PROMPT, build_extraction_prompt
+from segmentation.seg_prompt import SYSTEM_PROMPT as SEGMENTATION_SYSTEM_PROMPT, build_segmentation_user_prompt
+from transformations.thread_description_prompt import (
+    SYSTEM_PROMPT as THREAD_DESCRIPTION_SYSTEM_PROMPT,
+    build_thread_description_prompt,
+)
 from security.ms_ocr_sanitisation import verify_token
 from schemas.ms_schema import MarkSchemeExtraction
 from schemas.marking_result_schema import MarkingResult
+from schemas.segmented_result import SegmentationResult
+from schemas.thread_description_result import ThreadDescriptionResult
 from observability.event_log import (
     log_extraction_refusal,
     log_extraction_truncated,
@@ -79,6 +87,27 @@ load_dotenv()
 # This is why the key is never hardcoded - it is pulled securly from .env
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+
+def _marking_rubric_without_constraints(rubric):
+    """Remove extraction-only constraints from the rubric sent to marking LLMs."""
+    if isinstance(rubric, str):
+        try:
+            parsed_rubric = json.loads(rubric)
+        except json.JSONDecodeError:
+            return rubric
+    elif isinstance(rubric, dict):
+        parsed_rubric = rubric
+    else:
+        return rubric
+
+    if not isinstance(parsed_rubric, dict):
+        return rubric
+
+    marking_rubric = dict(parsed_rubric)
+    marking_rubric.pop("band_constraints", None)
+    return json.dumps(marking_rubric, ensure_ascii=False)
+
+
 def extract_mark_scheme(scheme_text, expected_token):
     user_prompt = build_extraction_prompt(scheme_text)
 
@@ -134,8 +163,93 @@ def extract_mark_scheme(scheme_text, expected_token):
     return structured_scheme
 
 
+def generate_thread_description_response(scheme_text, expected_token):
+    user_prompt = build_thread_description_prompt(scheme_text)
+    print("[THREAD EXTRACTION] Thread-description LLM request started", flush=True)
+
+    try:
+        response = client.chat.completions.parse(
+            model="gpt-4o-mini",
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": THREAD_DESCRIPTION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format=ThreadDescriptionResult,
+        )
+    except LengthFinishReasonError as e:
+        log_extraction_truncated(str(e))
+        raise ExtractionTruncatedError(str(e)) from e
+    except ContentFilterFinishReasonError as e:
+        log_extraction_filtered()
+        raise ExtractionFilteredError(str(e)) from e
+
+    message = response.choices[0].message
+    if message.refusal:
+        log_extraction_refusal(message.refusal)
+        raise ExtractionRefusedError(message.refusal)
+
+    result = message.parsed
+    if result is None:
+        log_extraction_empty()
+        raise ExtractionIncompleteError(
+            "No parsed thread-description result, refusal, truncation, or "
+            "content-filter signal was returned"
+        )
+
+    verify_token(expected_token, result.delimiter_token)
+    list_result = result.model_dump(exclude={"delimiter_token"})
+    print(
+        "[THREAD EXTRACTION] Thread-description LLM returned list response\n"
+        f"{json.dumps(list_result, ensure_ascii=False, indent=2, default=str)}\n",
+        flush=True,
+    )
+    return _thread_description_lists_to_keyed_scheme(result)
+
+
+def _thread_description_lists_to_keyed_scheme(result: ThreadDescriptionResult):
+    """Restore the application's keyed thread-scheme shape after parsing the
+    list-only Structured Outputs response required by OpenAI."""
+    questions = {}
+
+    for question in result.questions:
+        assessment_objectives = {}
+
+        for assessment_objective in question.assessment_objectives:
+            threads = {
+                thread.thread_key: {
+                    "thread_id": thread.thread_id,
+                    "thread_description": thread.thread_description,
+                    "levels": [level.model_dump() for level in thread.levels],
+                }
+                for thread in assessment_objective.threads
+            }
+
+            assessment_objectives[assessment_objective.ao] = {
+                "marks_available": assessment_objective.marks_available,
+                "band_marks": [
+                    band_mark.model_dump()
+                    for band_mark in assessment_objective.band_marks
+                ],
+                "threads": threads,
+            }
+
+        questions[question.question] = {
+            "marks_available": question.marks_available,
+            "assessment_objectives": assessment_objectives,
+        }
+
+    return {"questions": questions}
+
+
 def generate_llm_response(question, essay, rubric, expected_token, max_score=6, exemplars=None):
-    user_prompt = build_user_prompt(question, essay, rubric, exemplars=exemplars)
+    marking_rubric = _marking_rubric_without_constraints(rubric)
+    user_prompt = build_user_prompt(
+        question,
+        essay,
+        marking_rubric,
+        exemplars=exemplars,
+    )
 
     # Structured Outputs + delimiter-token verification, same setup as
     # extract_mark_scheme() above: the SDK checks finish_reason itself and
@@ -196,3 +310,99 @@ def generate_llm_response(question, essay, rubric, expected_token, max_score=6, 
     results["maxScore"] = detected_max
 
     return results
+
+
+def generate_segmentation_response(
+    question,
+    essay,
+    thread_extraction,
+    expected_token,
+    max_score=6,
+    exemplars=None,
+):
+    del exemplars
+
+    if thread_extraction is None or (
+        isinstance(thread_extraction, str) and not thread_extraction.strip()
+    ):
+        raise ValueError(
+            "Segmentation requires thread_extraction for the selected mark scheme"
+        )
+
+    try:
+        selected_thread_extraction = (
+            json.loads(thread_extraction)
+            if isinstance(thread_extraction, str)
+            else thread_extraction
+        )
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            "Segmentation requires a valid JSON thread_extraction for the selected question"
+        ) from e
+
+    if not isinstance(selected_thread_extraction, dict):
+        raise ValueError(
+            "Segmentation requires a selected-question thread_extraction object"
+        )
+
+    assessment_objectives = selected_thread_extraction.get("assessment_objectives")
+    if not isinstance(assessment_objectives, dict) or not assessment_objectives:
+        raise ValueError(
+            "Segmentation requires assessment_objectives in the selected thread_extraction"
+        )
+
+    has_descriptor_thread = any(
+        isinstance(assessment_objective, dict)
+        and isinstance(assessment_objective.get("threads"), dict)
+        and assessment_objective["threads"]
+        for assessment_objective in assessment_objectives.values()
+    )
+    if not has_descriptor_thread:
+        raise ValueError(
+            "Segmentation requires at least one descriptor thread in the selected thread_extraction"
+        )
+
+    marks_available = selected_thread_extraction.get("marks_available")
+    if not isinstance(marks_available, int):
+        marks_available = max_score
+
+    user_prompt = build_segmentation_user_prompt(
+        question=question,
+        marks_available=marks_available,
+        thread_extraction=json.dumps(selected_thread_extraction, ensure_ascii=False),
+        essay=essay,
+    )
+
+    try:
+        response = client.chat.completions.parse(
+            model="gpt-4o-mini",
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": SEGMENTATION_SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format=SegmentationResult,
+        )
+    except LengthFinishReasonError as e:
+        log_marking_truncated(str(e))
+        raise ExtractionTruncatedError(str(e)) from e
+    except ContentFilterFinishReasonError as e:
+        log_marking_filtered()
+        raise ExtractionFilteredError(str(e)) from e
+
+    message = response.choices[0].message
+
+    if message.refusal:
+        log_marking_refusal(message.refusal)
+        raise ExtractionRefusedError(message.refusal)
+
+    result = message.parsed
+    if result is None:
+        log_marking_empty()
+        raise ExtractionIncompleteError(
+            "No segmentation result, refusal, truncation, or content-filter signal was returned"
+        )
+
+    verify_token(expected_token, result.delimiter_token)
+
+    return result.model_dump(exclude={"delimiter_token"})

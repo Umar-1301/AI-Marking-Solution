@@ -188,7 +188,8 @@ router.post('/:sourceLessonId/reuse', async (req, res, next) => {
             source.mark_scheme_file_name,
             source.mark_scheme_mime_type,
             source.ocr_text,
-            source.structured_scheme
+            source.structured_scheme,
+            source.thread_extraction
         )
 
         // Same has_multiple_questions computation POST / uses, so the
@@ -271,9 +272,25 @@ router.post('/',
             const structuredScheme = ocrResult.structured_scheme
                 ? JSON.stringify(ocrResult.structured_scheme)
                 : ''
+            const threadExtraction = ocrResult.thread_scheme
+                ? JSON.stringify(ocrResult.thread_scheme)
+                : ''
+
+            console.log('\n[THREAD EXTRACTION][BACKEND] Prepared SQL payload')
+            console.log(JSON.stringify({
+                thread_scheme_received: ocrResult.thread_scheme ?? null,
+                thread_extraction_characters: threadExtraction.length,
+                thread_extraction_sql_value: threadExtraction,
+            }, null, 2))
 
             const lessonId = await lessonDb.createLesson(
-                lessonTitle, classId, file.originalname, file.mimetype, cleanOcrText, structuredScheme
+                lessonTitle,
+                classId,
+                file.originalname,
+                file.mimetype,
+                cleanOcrText,
+                structuredScheme,
+                threadExtraction
             )
             logSchemeStored(req, lessonId)
 
@@ -319,6 +336,9 @@ router.get('/:lessonId/results', async (req, res, next) => {
             studentId: r.student_id,
             markedAt: r.marked_at,
             result: JSON.parse(r.student_grade),
+            segmentation: r.segmentation_grade
+                ? JSON.parse(r.segmentation_grade)
+                : null,
         }))
         res.json({ results })
     } catch (err) {

@@ -73,6 +73,13 @@ Return a JSON object with exactly this structure:
                         }}
                     ]
                 }}
+            ],
+            "band_constraints": [
+                {{
+                    "ao": <the exact AO affected by this restriction>,
+                    "description": <the exact text of the NB:, Note:, cap, or qualification from the mark scheme>,
+                    "affected_bands": [<the exact band labels whose award is limited or qualified by this rule>]
+                }}
             ]
         }}
     ]
@@ -84,10 +91,23 @@ Rules:
 - For a points-based scheme with no AOs or bands, use ao: "General" with individual criteria as bands.
 - Extract exactly what is written. Do not add information or fill in gaps.
 - Respond with valid JSON only. No intro text, no explanation outside the JSON.
-- Preserve descriptor as the complete, unseparated descriptor text for that band.
-- `descriptor` is a verbatim raw transcription of the complete band descriptor.
-  Preserve original bullet symbols, numbering, punctuation, line breaks, and
-  ordering. Do not rewrite, combine, or normalise it into prose.
+- Identify any note, restriction, qualification, cap, or instruction introduced
+  by `NB:`, `Note:`, `Important:`, or equivalent wording.
+- A band constraint is not an assessable student-performance descriptor. Do not
+  include it in that band's `descriptor` string or `descriptors` list.
+- Place every extracted constraint in the question-level `band_constraints`
+  list instead. Preserve its wording exactly in `description`.
+- If an `NB:` sentence appears inline after a descriptor bullet, split it away
+  internally. Keep the assessable bullet in `descriptor` and `descriptors`;
+  place the `NB:` sentence only in `band_constraints`.
+- A constraint must never appear in `descriptor` or `descriptors` once it has
+  been identified. It must appear only in `band_constraints`.
+- `descriptor` is a verbatim raw transcription of the complete assessable
+  student-performance descriptor content for that band, not the complete OCR
+  table cell. If the source cell contains both descriptors and a constraint,
+  remove the constraint before returning `descriptor`. Preserve the remaining
+  descriptor bullets, numbering, punctuation, line breaks, and ordering. Do
+  not rewrite, combine, or normalise the remaining assessable content into prose.
 - Return every individual descriptor bullet in descriptors, in original order.
 - Do not merge, split unnecessarily, paraphrase, omit, or add descriptor points.
 - If a band contains one unbulleted statement, descriptors must contain one item.

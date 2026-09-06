@@ -3,16 +3,13 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { getLesson, getLessonScheme, getStudents, getMarkingResults } from '../services/api'
 import ResultCard from '../components/ResultCard'
 import AnnotatedEssay from '../components/AnnotatedEssay'
-import DescriptorEvidenceEssay from '../components/DescriptorEvidenceEssay'
+import FinalBandEvidenceEssay from '../components/FinalBandEvidenceEssay'
 
-function hasDescriptorEvidence(breakdown) {
-  return (breakdown ?? []).some(criterion => {
-    const descriptorEvidence = criterion.evidenceSupportingAwardedBand
-      ?? criterion.evidence_supporting_awarded_band
-      ?? []
-
-    return descriptorEvidence.some(descriptor => Array.isArray(descriptor.evidence) && descriptor.evidence.length > 0)
-  })
+function hasFinalBandEvidence(segmentation) {
+  return segmentation?.status === 'complete'
+    && (segmentation.result?.threads ?? []).some(thread => (
+      Array.isArray(thread.evidence) && thread.evidence.length > 0
+    ))
 }
 
 function StudentFeedback() {
@@ -119,10 +116,10 @@ function StudentFeedback() {
                   <div className="student-result-expanded">
                     <ResultCard result={r.result} scheme={schemeData?.scheme} />
                     {r.result.studentOcrText && (
-                      hasDescriptorEvidence(r.result.breakdown) ? (
-                        <DescriptorEvidenceEssay
+                      hasFinalBandEvidence(r.segmentation) ? (
+                        <FinalBandEvidenceEssay
                           text={r.result.studentOcrText}
-                          breakdown={r.result.breakdown}
+                          segmentationResult={r.segmentation.result}
                         />
                       ) : (
                         <AnnotatedEssay

@@ -163,6 +163,17 @@ BEGIN
 END;
 GO
 
+-- Stores the descriptor-thread structure produced after mark-scheme
+-- extraction. It is retained separately from structured_scheme so later
+-- paragraph-level analysis can reuse it without re-running enrichment.
+IF COL_LENGTH('dbo.teacher_ocr', 'thread_extraction') IS NULL
+BEGIN
+    ALTER TABLE dbo.teacher_ocr
+        ADD thread_extraction NVARCHAR(MAX) NOT NULL
+            CONSTRAINT DF_teacher_ocr_thread_extraction DEFAULT N'';
+END;
+GO
+
 -- Added later: which question (index into structured_scheme's questions[])
 -- the teacher picked, for multi-question papers. NULL until they choose —
 -- single-question papers never need this set at all.
@@ -223,10 +234,18 @@ BEGIN
         student_id    INT           NOT NULL REFERENCES dbo.students(id),
         ocr_id        INT           NOT NULL UNIQUE REFERENCES dbo.student_ocr(id),
         student_grade NVARCHAR(MAX) NOT NULL,
+        segmentation_grade NVARCHAR(MAX) NULL,
         marked_at     NVARCHAR(30)  NOT NULL
             CONSTRAINT DF_marking_results_marked_at DEFAULT (CONVERT(VARCHAR(19), SYSUTCDATETIME(), 120)),
         CONSTRAINT UQ_marking_lesson_student UNIQUE (lesson_id, student_id)
     );
+END;
+GO
+
+IF COL_LENGTH(N'dbo.marking_results', N'segmentation_grade') IS NULL
+BEGIN
+    ALTER TABLE dbo.marking_results
+    ADD segmentation_grade NVARCHAR(MAX) NULL;
 END;
 GO
 

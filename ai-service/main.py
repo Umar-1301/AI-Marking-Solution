@@ -21,8 +21,11 @@ sys.path.append(str(Path(__file__).parent))
 from llm_service import (
     DescriptorContentIntegrityError,
     DescriptorValidationError,
+    ExtractionError,
     extract_mark_scheme,
+    generate_thread_description_response,
     generate_llm_response,
+    generate_segmentation_response,
 )
 from ocr_service import extract_text_from_file
 from rag_service import add_exemplar, get_similar, list_exemplars, delete_exemplar
@@ -33,6 +36,7 @@ from validation.descriptor_integrity_validation import (
 )
 from validation.descriptor_validation import validate_descriptor_shapes
 from validation.mark_int_validation import validate_mark_totals
+from transformations.segment_transormation import transform_segment_mark_scheme
 from observability.event_log import (
     log_descriptor_validation_issues,
     log_mark_total_corrections,
@@ -49,6 +53,15 @@ async def lifespan(_: FastAPI):
     yield
 
 app = FastAPI(lifespan=lifespan)
+
+
+def _log_thread_extraction(stage: str, payload) -> None:
+    print(
+        f"\n[THREAD EXTRACTION] {stage}\n"
+        f"{_json.dumps(payload, ensure_ascii=False, indent=2, default=str)}\n",
+        flush=True,
+    )
+
 
 # ── POST /ocr ─────────────────────────────────────────────────────────────────
 # Call 1: OCR the mark scheme, then extract its structure with the LLM.
@@ -118,7 +131,41 @@ async def ocr_file(file: UploadFile = File(...)):
     if corrections:
         log_mark_total_corrections(corrections)
 
-    return {"text": clean_text, "structured_scheme": structured_scheme}
+    _log_thread_extraction(
+        "Validated mark-scheme extraction complete; starting transformation",
+        structured_scheme,
+    )
+
+    thread_scheme_input = transform_segment_mark_scheme(structured_scheme)
+    _log_thread_extraction(
+        "Transformation complete; sending this thread scheme to the LLM",
+        thread_scheme_input,
+    )
+
+    thread_scheme_text = _json.dumps(thread_scheme_input, ensure_ascii=False)
+    thread_scheme_text, lookalikes = (
+        ms_ocr_sanitisation.strip_delimiter_like_patterns(thread_scheme_text)
+    )
+    if lookalikes:
+        log_security_stripped(lookalikes)
+
+    wrapped_thread_scheme, thread_token = ms_ocr_sanitisation.wrap_for_prompt(
+        thread_scheme_text
+    )
+    thread_scheme = generate_thread_description_response(
+        wrapped_thread_scheme,
+        thread_token,
+    )
+    _log_thread_extraction(
+        "Thread-description response converted back to the keyed application shape",
+        thread_scheme,
+    )
+
+    return {
+        "text": clean_text,
+        "structured_scheme": structured_scheme,
+        "thread_scheme": thread_scheme,
+    }
 
 def _question_number_from_scheme(scheme_text: str):
     try:
@@ -132,9 +179,10 @@ def _question_number_from_scheme(scheme_text: str):
 # file — avoids re-OCRing the scheme on every student submission.
 @app.post("/mark-with-scheme-text")
 async def mark_with_scheme_text(
-    student_work: UploadFile = File(...),
-    scheme_text:  str        = Form(...),
-    question:     str        = Form(default='')
+    student_work:      UploadFile = File(...),
+    scheme_text:       str        = Form(...),
+    thread_extraction: str        = Form(default=''),
+    question:          str        = Form(default='')
 ):
     student_bytes = await student_work.read()
     raw_text      = extract_text_from_file(student_bytes, student_work.filename)
@@ -169,6 +217,30 @@ async def mark_with_scheme_text(
         exemplars=exemplars or None,
     )
 
+    try:
+        segmentation_result = generate_segmentation_response(
+            question=question,
+            essay=wrapped_student_text,
+            thread_extraction=thread_extraction,
+            expected_token=expected_token,
+            max_score=100,
+            exemplars=exemplars or None,
+        )
+        segmentation = {
+            "status": "complete",
+            "result": segmentation_result,
+        }
+    except ValueError as e:
+        segmentation = {
+            "status": "skipped",
+            "reason": str(e),
+        }
+    except (ExtractionError, ms_ocr_sanitisation.TokenMismatchError) as e:
+        segmentation = {
+            "status": "failed",
+            "reason": str(e),
+        }
+
     return {
         "score":                    raw.get("score", 0),
         "maxScore":                 raw.get("maxScore"),
@@ -181,6 +253,7 @@ async def mark_with_scheme_text(
         "question_mismatch":        raw.get("question_mismatch", False),
         "question_mismatch_reason": raw.get("question_mismatch_reason", None),
         "annotations":              raw.get("annotations", []),
+        "segmentation":             segmentation,
     }
 
 # ── Exemplar management ───────────────────────────────────────────────────────
