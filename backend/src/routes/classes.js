@@ -15,27 +15,27 @@ function parseYear(className) {
 }
 
 // GET /classes — all classes belonging to the logged-in teacher, with student count
-router.get('/', (req, res, next) => {
+router.get('/', async (req, res, next) => {
     try {
-        res.json(classDb.listClasses(req.user.id))
+        res.json(await classDb.listClasses(req.user.id))
     } catch (err) {
         next(err)
     }
 })
 
 // GET /classes/:id/students — all students in a class owned by this teacher
-router.get('/:id/students', (req, res, next) => {
+router.get('/:id/students', async (req, res, next) => {
     try {
-        const cls = classDb.findClassById(req.params.id, req.user.id)
+        const cls = await classDb.findClassById(req.params.id, req.user.id)
         if (!cls) return res.status(404).json({ error: 'Class not found' })
-        res.json(classDb.listStudents(cls.id))
+        res.json(await classDb.listStudents(cls.id))
     } catch (err) {
         next(err)
     }
 })
 
 // POST /classes
-router.post('/', (req, res, next) => {
+router.post('/', async (req, res, next) => {
     try {
         const { className, students } = req.body
         const teacherId = req.user.id
@@ -62,37 +62,41 @@ router.post('/', (req, res, next) => {
         }
 
         const yearGroupId = parseYear(className.trim())
-        const validYear   = yearGroupId ? classDb.validateYear(yearGroupId) : null
+        const validYear   = yearGroupId ? await classDb.validateYear(yearGroupId) : null
         if (!validYear) {
             logClassFailed(req, 'validation', `Invalid year parsed from class name: ${className}`)
             return res.status(400).json({ error: 'Class name must include a valid year (7–11), e.g. "Year 10 Set 3" or "10e"' })
         }
 
-        const result = classDb.transaction(() => {
-            const existing = classDb.findClassByName(className.trim(), teacherId)
+        const result = await classDb.transaction(async (client) => {
+            const existing = await classDb.findClassByName(className.trim(), teacherId, client)
 
             let classId, isNew
             if (existing) {
                 classId = existing.id
                 isNew   = false
             } else {
-                const { lastInsertRowid } = classDb.insertClass(className.trim(), yearGroupId, teacherId)
-                classId = lastInsertRowid
+                const { id } = await classDb.insertClass(className.trim(), yearGroupId, teacherId, client)
+                classId = id
                 isNew   = true
                 logClassCreated(req, className.trim(), yearGroupId)
             }
 
-            const conflicts = students
-                .map(n => n.trim())
-                .filter(name => classDb.findStudentByName(name, classId))
+            // Async: can't use .filter with await, so collect conflicts in a loop.
+            const conflicts = []
+            for (const raw of students) {
+                const name = raw.trim()
+                if (await classDb.findStudentByName(name, classId, client)) conflicts.push(name)
+            }
 
             if (conflicts.length) return { conflict: true, conflicts }
 
-            const added = students.map(name => {
-                const trimmed = name.trim()
-                const { lastInsertRowid: studentId } = classDb.insertStudent(trimmed, classId)
-                return { id: studentId, student_name: trimmed }
-            })
+            const added = []
+            for (const raw of students) {
+                const trimmed = raw.trim()
+                const { id: studentId } = await classDb.insertStudent(trimmed, classId, client)
+                added.push({ id: studentId, student_name: trimmed })
+            }
 
             logStudentsAdded(req, added.map(s => s.student_name))
             logClassDone(req, classId, added.length)
@@ -123,12 +127,13 @@ router.post('/', (req, res, next) => {
 })
 
 // Helper: load a class only if it belongs to the logged-in teacher.
+// Returns a Promise (callers await).
 function ownedClass(classId, teacherId) {
     return classDb.findClassById(classId, teacherId)
 }
 
 // PATCH /classes/:id — rename a class (and re-derive year if it changes).
-router.patch('/:id', (req, res, next) => {
+router.patch('/:id', async (req, res, next) => {
     try {
         const { class_name: newName } = req.body
         if (!newName?.trim()) {
@@ -138,20 +143,20 @@ router.patch('/:id', (req, res, next) => {
             return res.status(400).json({ error: `Class name must not exceed ${CLASS_NAME_MAX} characters` })
         }
 
-        const cls = ownedClass(req.params.id, req.user.id)
+        const cls = await ownedClass(req.params.id, req.user.id)
         if (!cls) return res.status(404).json({ error: 'Class not found' })
 
         const trimmed     = newName.trim()
         const yearGroupId = parseYear(trimmed)
-        const validYear   = yearGroupId ? classDb.validateYear(yearGroupId) : null
+        const validYear   = yearGroupId ? await classDb.validateYear(yearGroupId) : null
         if (!validYear) {
             return res.status(400).json({ error: 'Class name must include a valid year (7–11)' })
         }
 
-        const dup = classDb.findClassByNameExcluding(trimmed, req.user.id, cls.id)
+        const dup = await classDb.findClassByNameExcluding(trimmed, req.user.id, cls.id)
         if (dup) return res.status(409).json({ error: 'You already have another class with this name' })
 
-        classDb.updateClass(trimmed, yearGroupId, cls.id)
+        await classDb.updateClass(trimmed, yearGroupId, cls.id)
 
         res.json({ id: cls.id, class_name: trimmed, year_group_id: yearGroupId })
     } catch (err) {
@@ -160,7 +165,7 @@ router.patch('/:id', (req, res, next) => {
 })
 
 // POST /classes/:id/students — add a single student to the class.
-router.post('/:id/students', (req, res, next) => {
+router.post('/:id/students', async (req, res, next) => {
     try {
         const { student_name: name } = req.body
         if (!name?.trim()) {
@@ -170,22 +175,22 @@ router.post('/:id/students', (req, res, next) => {
             return res.status(400).json({ error: `Student name must not exceed ${STUDENT_NAME_MAX} characters` })
         }
 
-        const cls = ownedClass(req.params.id, req.user.id)
+        const cls = await ownedClass(req.params.id, req.user.id)
         if (!cls) return res.status(404).json({ error: 'Class not found' })
 
         const trimmed = name.trim()
-        const dup     = classDb.findStudentByName(trimmed, cls.id)
+        const dup     = await classDb.findStudentByName(trimmed, cls.id)
         if (dup) return res.status(409).json({ error: `"${trimmed}" is already in this class` })
 
-        const { lastInsertRowid } = classDb.insertStudent(trimmed, cls.id)
-        res.status(201).json({ id: lastInsertRowid, student_name: trimmed })
+        const { id } = await classDb.insertStudent(trimmed, cls.id)
+        res.status(201).json({ id, student_name: trimmed })
     } catch (err) {
         next(err)
     }
 })
 
 // PATCH /classes/:id/students/:studentId — rename a student inside this class.
-router.patch('/:id/students/:studentId', (req, res, next) => {
+router.patch('/:id/students/:studentId', async (req, res, next) => {
     try {
         const { student_name: newName } = req.body
         if (!newName?.trim()) {
@@ -195,17 +200,17 @@ router.patch('/:id/students/:studentId', (req, res, next) => {
             return res.status(400).json({ error: `Student name must not exceed ${STUDENT_NAME_MAX} characters` })
         }
 
-        const cls = ownedClass(req.params.id, req.user.id)
+        const cls = await ownedClass(req.params.id, req.user.id)
         if (!cls) return res.status(404).json({ error: 'Class not found' })
 
-        const student = classDb.findStudentById(req.params.studentId, cls.id)
+        const student = await classDb.findStudentById(req.params.studentId, cls.id)
         if (!student) return res.status(404).json({ error: 'Student not found in this class' })
 
         const trimmed = newName.trim()
-        const dup     = classDb.findStudentByNameExcluding(trimmed, cls.id, student.id)
+        const dup     = await classDb.findStudentByNameExcluding(trimmed, cls.id, student.id)
         if (dup) return res.status(409).json({ error: `"${trimmed}" is already in this class` })
 
-        classDb.updateStudent(trimmed, student.id)
+        await classDb.updateStudent(trimmed, student.id)
         res.json({ id: student.id, student_name: trimmed })
     } catch (err) {
         next(err)
@@ -213,15 +218,15 @@ router.patch('/:id/students/:studentId', (req, res, next) => {
 })
 
 // DELETE /classes/:id/students/:studentId — remove a student plus their derived rows.
-router.delete('/:id/students/:studentId', (req, res, next) => {
+router.delete('/:id/students/:studentId', async (req, res, next) => {
     try {
-        const cls = ownedClass(req.params.id, req.user.id)
+        const cls = await ownedClass(req.params.id, req.user.id)
         if (!cls) return res.status(404).json({ error: 'Class not found' })
 
-        const student = classDb.findStudentById(req.params.studentId, cls.id)
+        const student = await classDb.findStudentById(req.params.studentId, cls.id)
         if (!student) return res.status(404).json({ error: 'Student not found in this class' })
 
-        classDb.deleteStudent(student.id)
+        await classDb.deleteStudent(student.id)
         res.json({ id: student.id, deleted: true })
     } catch (err) {
         next(err)

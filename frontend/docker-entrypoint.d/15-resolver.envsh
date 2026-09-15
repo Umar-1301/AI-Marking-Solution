@@ -1,0 +1,21 @@
+#!/bin/sh
+# Runs (sourced) by the nginx entrypoint BEFORE 20-envsubst-on-templates.sh, so
+# the values it exports are available when envsubst renders nginx.conf.template.
+#
+# Why: nginx caches the upstream IP at startup. When a backend replica recycles
+# or scales, its IP changes and nginx keeps proxying the dead one (502s). The
+# template uses a `resolver` + a variable proxy_pass to re-resolve at request
+# time instead — but `resolver` needs the container's actual DNS server IP, and
+# a variable proxy_pass can't derive the Host/SNI, so we compute both here.
+
+# 1) DNS server for runtime re-resolution. Read the first nameserver from
+#    /etc/resolv.conf so this works everywhere: 127.0.0.11 under Docker, the
+#    platform DNS under Azure Container Apps. Fall back to Docker's embedded DNS.
+NGINX_RESOLVER="$(awk '/^nameserver/ { print $2; exit }' /etc/resolv.conf)"
+export NGINX_RESOLVER="${NGINX_RESOLVER:-127.0.0.11}"
+
+# 2) Bare host[:port] from BACKEND_URL, used for the Host header and TLS SNI.
+#    ACA's internal ingress routes by Host/SNI, so these must be the backend's
+#    hostname, not the frontend's. Strip the scheme, then any trailing path.
+_host="${BACKEND_URL#*://}"
+export BACKEND_HOST="${_host%%/*}"

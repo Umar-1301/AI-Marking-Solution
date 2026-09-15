@@ -4,6 +4,8 @@
 # The official nginx:alpine entrypoint runs envsubst on this file at container
 # start, substituting ${BACKEND_URL} — nginx's own $variables (e.g. $host,
 # $scheme, $uri) are left untouched since they aren't OS environment variables.
+# ${NGINX_RESOLVER} and ${BACKEND_HOST} are exported by
+# docker-entrypoint.d/15-resolver.envsh before envsubst runs.
 
 server {
     listen 80;
@@ -13,9 +15,20 @@ server {
     # headroom above multer's combined limit.
     client_max_body_size 10m;
 
-    # Backend API — /api/auth/login -> ${BACKEND_URL}/auth/login (prefix stripped)
-    location /api/ {
-        proxy_pass ${BACKEND_URL}/;
+    # Backend API — /api/auth/login -> ${BACKEND_URL}/auth/login (prefix stripped).
+    #
+    # Dynamic upstream: a literal proxy_pass makes nginx resolve BACKEND_URL once
+    # at startup and cache that IP forever, so when a backend replica recycles or
+    # scales it keeps hitting the dead IP (502, no retry). Putting the upstream in
+    # a variable defers resolution to request time, and `resolver` re-resolves it
+    # on the TTL below — so nginx follows the backend across replica churn.
+    #
+    # The regex capture (apipath) does the /api/ strip that a variable proxy_pass
+    # no longer does automatically; $is_args$args preserves the query string.
+    location ~ ^/api/(?<apipath>.*)$ {
+        resolver ${NGINX_RESOLVER} valid=10s ipv6=off;
+        set $backend "${BACKEND_URL}";
+        proxy_pass $backend/$apipath$is_args$args;
 
         # Azure Container Apps' ingress (Envoy) rejects HTTP/1.0 with 426 Upgrade
         # Required. nginx proxies as HTTP/1.0 by default, so force 1.1 and clear
@@ -24,13 +37,14 @@ server {
         proxy_set_header Connection "";
 
         # Azure Container Apps' internal ingress routes by SNI + Host to pick the
-        # target app. So the Host must be the BACKEND's hostname ($proxy_host =
-        # the host from proxy_pass), NOT the frontend's ($host), and SNI must be
-        # sent on the upstream TLS handshake. Without these, ACA can't route the
-        # request to the backend and returns 502. (Locally this didn't matter:
-        # BACKEND_URL was a direct http://container, no ingress, no TLS.)
+        # target app, so both must be the BACKEND's hostname, NOT the frontend's.
+        # With a variable proxy_pass, $proxy_host is unreliable, so we use
+        # ${BACKEND_HOST} (derived from BACKEND_URL by the entrypoint script).
+        # Without these, ACA can't route to the backend and returns 502. (Locally
+        # this is a no-op: BACKEND_URL is a plain http://container, no TLS.)
         proxy_ssl_server_name on;
-        proxy_set_header Host $proxy_host;
+        proxy_ssl_name ${BACKEND_HOST};
+        proxy_set_header Host ${BACKEND_HOST};
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
@@ -38,6 +52,10 @@ server {
         # response, and allow enough time for OCR to complete.
         proxy_buffering off;
         proxy_read_timeout 300s;
+
+        # If the re-resolved address fails to connect or times out, try the next
+        # one rather than surfacing the error to the client.
+        proxy_next_upstream error timeout http_502 http_503 http_504;
     }
 
     # Frontend static files (SPA — client-side routing falls back to index.html)

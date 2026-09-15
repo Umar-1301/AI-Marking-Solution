@@ -31,11 +31,21 @@ export async function getLesson(lessonId) {
     return data
 }
 
-export async function getLessonOcr(lessonId) {
+// Returns { scheme: {...} } for the lesson's selected question, or
+// { scheme: null, ocr_text } as a fallback when there's no usable
+// structured_scheme yet.
+export async function getLessonScheme(lessonId) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/ocr`, { credentials: 'include' })
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || 'Failed to load mark scheme')
-    return data.ocr_text
+    return data
+}
+
+export async function getLessonQuestions(lessonId) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/questions`, { credentials: 'include' })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to load questions')
+    return data
 }
 
 // onEvent(event) fires for each streamed progress event:
@@ -43,9 +53,9 @@ export async function getLessonOcr(lessonId) {
 //   { type: 'ai_dispatched' }
 //   { type: 'ocr_file_type', fileType, pageCount }
 //   { type: 'ocr_page', index, totalPages }
-//   { type: 'done', data: { id, class_id, class_name } }
+//   { type: 'done', data: { id, class_id, class_name, paper_type, questions } }
 //   { type: 'error', message, detail, code, status }
-export async function createLesson(classId, markSchemeFile, onEvent = () => {}) {
+export async function createLesson(classId, markSchemeFile, onEvent = () => { }) {
     const formData = new FormData()
     formData.append('markScheme', markSchemeFile)
     formData.append('classId', classId)
@@ -65,7 +75,7 @@ export async function createLesson(classId, markSchemeFile, onEvent = () => {}) 
         throw new Error(`Server error (${response.status}) — is the backend running?`)
     }
 
-    const reader  = response.body.getReader()
+    const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     let result = null
@@ -82,13 +92,133 @@ export async function createLesson(classId, markSchemeFile, onEvent = () => {}) 
             if (!line.trim()) continue
             const event = JSON.parse(line)
             onEvent(event)
-            if (event.type === 'done')  result = event.data
+            if (event.type === 'done') result = event.data
             if (event.type === 'error') throw new Error(event.message)
         }
     }
 
     if (!result) throw new Error('Lesson creation did not complete')
     return result
+}
+
+// Clones a previous lesson's already-extracted mark scheme into a new lesson
+// for the given class — no re-OCR. Returns the same shape createLesson's
+// streamed 'done' event does, so callers can branch on has_multiple_questions
+// identically either way.
+export async function reuseMarkScheme(sourceLessonId, classId) {
+    const response = await fetch(`${API_BASE}/lessons/${sourceLessonId}/reuse`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ classId }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to reuse mark scheme')
+    return data
+}
+
+export async function selectQuestion(lessonId, selectedQuestionIndex) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/select-question`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ selectedQuestionIndex }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to select question')
+    return data
+}
+
+// Presence-only check — true/false, never the result content. Used to
+// restore tick state on page load without pulling the full grade payload.
+export async function getResultPresence(lessonId, studentId) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/result_presence/${studentId}`, {
+        credentials: 'include',
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to check result status')
+    return data.present
+}
+
+// Returns the newest persisted marking job for each student in a lesson.
+// The request itself is short-lived; StudentMarking repeats it only while at
+// least one job is queued, processing, or marking.
+export async function getMarkingJobStatuses(lessonId) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/job-status`, {
+        credentials: 'include',
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to check marking job status')
+    return data.jobs
+}
+
+export async function getMarkingResults(lessonId) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/results`, { credentials: 'include' })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to fetch results')
+    return data.results
+}
+
+// Requests a short-lived, write-only SAS URL scoped to one student's blob
+// path — the file itself is never sent to our backend, only its name.
+export async function getUploadUrl(lessonId, studentId, fileName) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/students/${studentId}/upload-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ fileName }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to get upload URL')
+    return data.uploadUrl
+}
+
+// PUTs straight to blob storage using the SAS URL above — bypasses our own
+// backend entirely for the file bytes. Not our API, so no API_BASE and no
+// credentials (auth is the SAS query string itself, not our session
+// cookie). x-ms-blob-type is required by the Blob REST API for a block
+// blob PUT.
+export async function uploadToBlob(uploadUrl, file) {
+    const response = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+            'x-ms-blob-type': 'BlockBlob',
+            'Content-Type': file.type,
+        },
+        body: file,
+    })
+    if (!response.ok) throw new Error(`Blob upload failed (${response.status})`)
+
+    // Browser-console only — there's no frontend logging pipeline in this
+    // app, and this PUT goes straight to Azure, bypassing our backend
+    // entirely, so no server-side log can see this event at all. If this
+    // ever needs to be durable (queryable, retained), it'd need to be
+    // reported back to the backend as its own call.
+    console.info(`[blob] uploaded ${file.name} (${file.size} bytes)`)
+}
+
+// Queues a marking request for work already stored in Blob Storage.
+// Only identifiers cross this request; teacherId comes from the JWT cookie.
+export async function markStudentWork(lessonId, studentId) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/mark-student`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ studentId }),
+    })
+
+    if (response.status === 401) {
+        throw new Error('Your session has expired. Please log in again.')
+    }
+
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.includes('json')) {
+        throw new Error(`Server error (${response.status}) — is the backend running?`)
+    }
+
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to queue student work')
+    return data
 }
 
 export async function createClass(className, students) {
@@ -164,57 +294,4 @@ export async function refreshSession() {
     })
     if (!response.ok) return null
     return response.json()
-}
-
-// onEvent(event) is called for each streamed event as it arrives:
-//   { type: 'security', checks: [...] }  — fired immediately after security checks
-//   { type: 'result',   data: {...}    }  — fired when OCR + marking completes
-//   { type: 'error',    message: '...' }  — fired if the AI service fails
-export async function submitFiles(studentWork, markScheme, onEvent) {
-    const formData = new FormData()
-    formData.append('studentWork', studentWork)
-    formData.append('markScheme', markScheme)
-
-    const response = await fetch(`${API_BASE}/upload`, {
-        method: 'POST',
-        body: formData,
-        credentials: 'include',
-    })
-
-    // Auth check is unconditional — a 401 must always redirect to login regardless
-    // of whether the response arrived as plain JSON or mid-stream NDJSON.
-    if (response.status === 401) {
-        throw new Error('Your session has expired. Please sign in again.')
-    }
-
-    // Non-streaming error responses (security failures, rate limits) come back as plain JSON
-    if (!response.headers.get('content-type')?.includes('ndjson')) {
-        const data = await response.json()
-        throw Object.assign(new Error(data.error || 'Something went wrong'), { debug: data._debug })
-    }
-
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ''
-    let result = null
-
-    while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n')
-        buffer = lines.pop() // keep any incomplete trailing line
-
-        for (const line of lines) {
-            if (!line.trim()) continue
-            const event = JSON.parse(line)
-            onEvent(event)
-            if (event.type === 'result') result = event.data
-            if (event.type === 'error')  throw Object.assign(new Error(event.message), { detail: event.detail, code: event.code, status: event.status })
-        }
-    }
-
-    if (!result) throw new Error('No result received')
-    return result
 }

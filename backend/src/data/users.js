@@ -25,8 +25,8 @@ export function findByEmail(email) {
 export async function createUser({ name, email, password }) {
     if (name.length > NAME_MAX) throw new Error('Name must not exceed 100 characters')
     const passwordHash = await bcrypt.hash(applyPasswordPepper(password), BCRYPT_COST)
-    const result = teacherDb.insert(name.trim(), hashEmail(email), passwordHash)
-    return { id: result.lastInsertRowid, name: name.trim() }
+    const result = await teacherDb.insert(name.trim(), hashEmail(email), passwordHash)
+    return { id: result.id, name: name.trim() }
 }
 
 export async function verifyPassword(plaintext, hash) {

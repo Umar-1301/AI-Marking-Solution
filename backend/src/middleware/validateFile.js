@@ -96,9 +96,3 @@ export function makeValidateFile(slots) {
         next()
     }
 }
-
-// Default two-slot export used by the upload route — behaviour unchanged.
-export const validateFile = makeValidateFile([
-    { field: 'studentWork', label: 'Student Work' },
-    { field: 'markScheme',  label: 'Mark Scheme'  },
-])

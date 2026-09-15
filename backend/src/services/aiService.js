@@ -1,17 +1,26 @@
 import FormData from 'form-data'
 import fetch from 'node-fetch'
 import config from '../config/index.js'
-import { sanitizeAIResult } from '../utils/sanitize.js'
+
+function logThreadExtraction(stage, details = '') {
+    const suffix = details ? ` — ${details}` : ''
+    console.log(`[THREAD EXTRACTION][BACKEND] ${stage}${suffix}`)
+}
 
 // POST /ocr — single-file OCR only, no marking.
 // Used for mark scheme processing at lesson start (first in the marking queue).
-// Returns { text, stages, meta } from run_ocr() on the Python service.
+// Returns { text, structured_scheme, thread_scheme } from the Python service.
 export async function getOcrFromAI(file) {
     const form = new FormData()
     form.append('file', file.buffer, {
         filename:    file.originalname,
         contentType: file.mimetype,
     })
+
+    logThreadExtraction(
+        '1/5 Sending mark scheme to AI service',
+        `file=${file.originalname}, bytes=${file.size}`
+    )
 
     let response
     try {
@@ -38,31 +47,46 @@ export async function getOcrFromAI(file) {
         throw err
     }
 
-    return response.json()
+    const result = await response.json()
+    logThreadExtraction(
+        '2/5 AI-service response received',
+        `thread scheme ${result.thread_scheme ? 'present' : 'missing'}`
+    )
+
+    return {
+        ...result,
+        thread_scheme: result.thread_scheme ?? null,
+    }
 }
 
-export async function getMarkFromAI(studentWorkFile, markSchemeFile) {
+// POST /mark-with-scheme-text — mark one student's work against an
+// already-extracted mark scheme (avoids re-OCRing/re-extracting the scheme
+// on every student). Returns the raw AI-service response as-is — callers
+// (lessons.js) currently pass this straight through with no allowlist or
+// re-validation step.
+export async function getMarkFromAIWithSchemeText(
+    studentWorkFile,
+    schemeText,
+    threadExtraction = '',
+    question = ''
+) {
     const form = new FormData()
-
     form.append('student_work', studentWorkFile.buffer, {
-        filename: studentWorkFile.originalname,
+        filename:    studentWorkFile.originalname,
         contentType: studentWorkFile.mimetype,
     })
-
-    form.append('mark_scheme', markSchemeFile.buffer, {
-        filename: markSchemeFile.originalname,
-        contentType: markSchemeFile.mimetype,
-    })
+    form.append('scheme_text', schemeText)
+    form.append('thread_extraction', threadExtraction)
+    form.append('question',    question)
 
     let response
     try {
-        response = await fetch(`${config.AI_SERVICE_URL}/mark`, {
-            method: 'POST',
-            body: form,
+        response = await fetch(`${config.AI_SERVICE_URL}/mark-with-scheme-text`, {
+            method:  'POST',
+            body:    form,
             headers: form.getHeaders(),
         })
     } catch (fetchErr) {
-        // Network-level failure — AI service is down or unreachable
         const err = new Error('AI service unreachable')
         err.aiStatus    = null
         err.aiErrorCode = fetchErr.code ?? 'FETCH_ERROR'
@@ -80,11 +104,5 @@ export async function getMarkFromAI(studentWorkFile, markSchemeFile) {
         throw err
     }
 
-    const raw = await response.json()
-    const ocrStages = raw._ocr_stages
-    const ocrMeta   = raw._ocr_meta
-    const sanitized = sanitizeAIResult(raw)
-    if (ocrStages) sanitized._ocr_stages = ocrStages
-    if (ocrMeta)   sanitized._ocr_meta   = ocrMeta
-    return sanitized
+    return response.json()
 }

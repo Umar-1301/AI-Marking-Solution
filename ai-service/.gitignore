@@ -1,4 +1,19 @@
+# Secrets — machine-specific, never commit
+local.env
+
 # Local sizing-test artifacts — not part of the service.
 samples/
 *.csv
 chandra-response.json
+
+# Temporary Datalab schema-extraction probe and its saved raw response.
+# The response contains verbatim student work; never commit either file.
+_probe_chandra_blocks.py
+_probe_chandra_output.json
+
+# RAG exemplar store — contains real student essay content and embeddings,
+# never commit. .gitkeep still tracked so the directory itself persists.
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+data/*.sqlite-journal

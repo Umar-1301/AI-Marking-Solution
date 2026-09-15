@@ -1,130 +1,690 @@
-import Database from 'better-sqlite3'
-import { fileURLToPath } from 'url'
-import { dirname, join } from 'path'
-import { initSchema } from './schema.js'
+import sql from 'mssql'
+import config from '../config/index.js'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname  = dirname(__filename)
+// Azure SQL connection pool. Authentication uses Entra ID through
+// DefaultAzureCredential by default: the Container App's managed identity in
+// Azure, or an authenticated developer identity locally. No database password
+// is stored in source code or environment variables for that path.
+//
+// Local-only exception: if SQL_USER/SQL_PASSWORD are set (only true in a
+// local .env, pointing at the docker-compose SQL Server container — see
+// docker-compose.yml and db/apply-schema.mjs), SQL authentication is used
+// instead, so local development doesn't depend on the live Azure SQL server
+// being reachable. Production never sets these two variables, so it always
+// takes the Entra ID branch below — this file behaves identically to before
+// in that case, not just similarly.
+const dbConfig = (config.SQL_USER && config.SQL_PASSWORD)
+    ? {
+        server: config.SQL_SERVER,
+        database: config.SQL_DATABASE,
+        user: config.SQL_USER,
+        password: config.SQL_PASSWORD,
+        options: {
+            encrypt: true,
+            // The container's TLS cert is self-signed — there's no CA to
+            // validate it against locally, unlike Azure SQL's real cert.
+            trustServerCertificate: true,
+        },
+        connectionTimeout: 30000,
+        pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
+    }
+    : {
+        server: config.SQL_SERVER,
+        database: config.SQL_DATABASE,
+        authentication: { type: 'azure-active-directory-default' },
+        options: {
+            encrypt: true,
+            trustServerCertificate: false,
+        },
+        connectionTimeout: 30000,
+        // Keeping no idle connections open allows an Azure SQL serverless database
+        // to auto-pause when the application is quiet.
+        pool: { max: 10, min: 0, idleTimeoutMillis: 30000 },
+    }
 
-const DB_PATH = join(__dirname, '..', 'data', 'aimira.sqlite')
+export const pool = new sql.ConnectionPool(dbConfig)
+export const poolConnect = pool.connect()
 
-const db = new Database(DB_PATH)
-
-// WAL gives concurrent reads + a writer without blocking; foreign_keys must
-// be enabled per-connection — SQLite defaults to off for backwards compat.
-db.pragma('journal_mode = WAL')
-db.pragma('foreign_keys = ON')
-
-// Build the schema BEFORE preparing any statements below. On a fresh database
-// (e.g. a new container) the tables don't exist yet, and db.prepare() against a
-// missing table throws — so the schema must be created here first.
-initSchema(db)
-
-// Least-privilege accessor for the teachers table only.
-// Prepared once at startup — users.js imports this instead of the raw db
-// connection so it cannot run arbitrary SQL against any other table.
-const _teacherFind   = db.prepare('SELECT * FROM teachers WHERE email_hash = ?')
-const _teacherInsert = db.prepare('INSERT INTO teachers (name, email_hash, password_hash) VALUES (?, ?, ?)')
-
-export const teacherDb = {
-    findByEmailHash: (emailHash) => _teacherFind.get(emailHash),
-    insert:          (name, emailHash, passwordHash) => _teacherInsert.run(name, emailHash, passwordHash),
+// Parameter descriptors keep every query explicitly typed. This prevents the
+// driver or SQL Server from guessing types and preserves Unicode input.
+const intParam = (name, value) => {
+    const parsed = typeof value === 'number' ? value : Number(value)
+    if (!Number.isSafeInteger(parsed)) {
+        throw new TypeError(`${name} must be an integer`)
+    }
+    return { name, type: sql.Int, value: parsed }
 }
 
-// Least-privilege accessor for the lessons flow only.
-// Covers: ownership check on classes, lesson creation, and OCR storage.
-// lessons.js imports this instead of the raw db connection.
-const _listLessons       = db.prepare(`
-    SELECT l.id, l.lesson_title, l.class_id, l.created_at, c.class_name
-    FROM lessons l
-    JOIN classes c ON l.class_id = c.id
-    WHERE c.teacher_id = ?
-    ORDER BY l.created_at DESC
-`)
-const _findLesson        = db.prepare(`
-    SELECT l.id, l.lesson_title, l.class_id, c.class_name
-    FROM lessons l
-    JOIN classes c ON l.class_id = c.id
-    WHERE l.id = ? AND c.teacher_id = ?
-`)
-const _lessonClassCheck  = db.prepare('SELECT id, class_name FROM classes WHERE id = ? AND teacher_id = ?')
-const _lessonInsert      = db.prepare('INSERT INTO lessons (lesson_title, class_id, mark_scheme_file_name, mark_scheme_mime_type) VALUES (?, ?, ?, ?)')
-const _teacherOcrInsert  = db.prepare('INSERT INTO teacher_ocr (lesson_id, ocr_text) VALUES (?, ?)')
-const _lessonOcrLink     = db.prepare('UPDATE lessons SET mark_scheme_ocr = ? WHERE id = ?')
-const _lessonOcrText     = db.prepare(`
-    SELECT t.ocr_text
-    FROM teacher_ocr t
-    JOIN lessons l ON t.lesson_id = l.id
-    JOIN classes c ON l.class_id = c.id
-    WHERE l.id = ? AND c.teacher_id = ?
-`)
+const textParam = (name, length, value) => {
+    if (typeof value !== 'string') {
+        throw new TypeError(`${name} must be a string`)
+    }
+    return { name, type: sql.NVarChar(length), value }
+}
 
-const _createLessonTx = db.transaction((lessonTitle, classId, fileName, mimeType, ocrText) => {
-    const { lastInsertRowid: lessonId } = _lessonInsert.run(lessonTitle, classId, fileName, mimeType)
-    const { lastInsertRowid: ocrId }    = _teacherOcrInsert.run(lessonId, ocrText)
-    _lessonOcrLink.run(ocrId, lessonId)
-    return lessonId
-})
+const nullableTextParam = (name, length, value) => {
+    if (value !== null && typeof value !== 'string') {
+        throw new TypeError(`${name} must be a string or null`)
+    }
+    return { name, type: sql.NVarChar(length), value }
+}
+
+const uuidParam = (name, value) => {
+    if (typeof value !== 'string') {
+        throw new TypeError(`${name} must be a UUID string`)
+    }
+    return { name, type: sql.UniqueIdentifier, value }
+}
+
+// Execute against either the shared pool or an mssql Transaction. Accessor
+// method signatures remain unchanged: methods use the pool by default, while
+// transactional callers pass their Transaction as the optional executor `e`.
+const exec = async (e, queryText, params = []) => {
+    const request = new sql.Request(e)
+    for (const { name, type, value } of params) {
+        request.input(name, type, value)
+    }
+    return request.query(queryText)
+}
+
+async function inTransaction(work) {
+    const transaction = new sql.Transaction(pool)
+    await transaction.begin(sql.ISOLATION_LEVEL.READ_COMMITTED)
+
+    try {
+        const result = await work(transaction)
+        await transaction.commit()
+        return result
+    } catch (err) {
+        // Preserve the original database/application error if SQL Server has
+        // already aborted the transaction and rollback consequently also fails.
+        try {
+            await transaction.rollback()
+        } catch (rollbackErr) {
+            err.rollbackError = rollbackErr
+        }
+        throw err
+    }
+}
+
+// Least-privilege application accessor for the teachers table.
+export const teacherDb = {
+    findByEmailHash: async (emailHash, e = pool) =>
+        (await exec(e, `
+            SELECT id, name, email_hash, password_hash, created_at
+            FROM dbo.teachers
+            WHERE email_hash = @emailHash
+        `, [
+            textParam('emailHash', 64, emailHash),
+        ])).recordset[0],
+
+    insert: async (name, emailHash, passwordHash, e = pool) =>
+        (await exec(e, `
+            INSERT INTO dbo.teachers (name, email_hash, password_hash)
+            OUTPUT INSERTED.id
+            VALUES (@name, @emailHash, @passwordHash)
+        `, [
+            textParam('name', 100, name),
+            textParam('emailHash', 64, emailHash),
+            textParam('passwordHash', 100, passwordHash),
+        ])).recordset[0],
+}
+
+// Lessons are always joined through their class so teacher ownership remains
+// part of the database predicate, not a frontend assumption.
+const SQL_LIST_LESSONS = `
+    SELECT l.id, l.lesson_title, l.class_id, l.created_at, c.class_name
+    FROM dbo.lessons AS l
+    JOIN dbo.classes AS c ON l.class_id = c.id
+    WHERE c.teacher_id = @teacherId
+    ORDER BY l.created_at DESC
+`
+
+const SQL_FIND_LESSON = `
+    SELECT l.id, l.lesson_title, l.class_id, c.class_name
+    FROM dbo.lessons AS l
+    JOIN dbo.classes AS c ON l.class_id = c.id
+    WHERE l.id = @lessonId AND c.teacher_id = @teacherId
+`
+
+const SQL_LESSON_CLASS_CHECK = `
+    SELECT id, class_name
+    FROM dbo.classes
+    WHERE id = @classId AND teacher_id = @teacherId
+`
+
+// Central read for everything about a lesson's mark scheme — ownership-checked
+// once here, reused by every endpoint that needs any piece of this data
+// (GET /:id/ocr, GET /:id/questions) rather than each running its own query.
+const SQL_LESSON_OCR_TEXT = `
+    SELECT t.ocr_text, t.structured_scheme, t.thread_extraction,
+           t.selected_question_index
+    FROM dbo.teacher_ocr AS t
+    JOIN dbo.lessons AS l ON t.lesson_id = l.id
+    JOIN dbo.classes AS c ON l.class_id = c.id
+    WHERE l.id = @lessonId AND c.teacher_id = @teacherId
+`
+
+// Everything needed to clone a lesson's already-extracted mark scheme into a
+// brand-new lesson, without touching students or marking_results — backs
+// POST /:sourceLessonId/reuse, which starts a genuinely new session rather
+// than resuming the old one.
+const SQL_LESSON_SCHEME_FOR_REUSE = `
+    SELECT l.lesson_title, l.mark_scheme_file_name, l.mark_scheme_mime_type,
+           t.ocr_text, t.structured_scheme, t.thread_extraction
+    FROM dbo.teacher_ocr AS t
+    JOIN dbo.lessons AS l ON t.lesson_id = l.id
+    JOIN dbo.classes AS c ON l.class_id = c.id
+    WHERE l.id = @lessonId AND c.teacher_id = @teacherId
+`
 
 export const lessonDb = {
-    listLessons:  (teacherId)                                      => _listLessons.all(teacherId),
-    findLesson:   (lessonId, teacherId)                            => _findLesson.get(lessonId, teacherId),
-    findClass:    (classId, teacherId)                              => _lessonClassCheck.get(classId, teacherId),
-    createLesson: (lessonTitle, classId, fileName, mimeType, ocrText) => _createLessonTx(lessonTitle, classId, fileName, mimeType, ocrText),
-    getOcrText:   (lessonId, teacherId)                            => _lessonOcrText.get(lessonId, teacherId),
+    listLessons: async (teacherId, e = pool) =>
+        (await exec(e, SQL_LIST_LESSONS, [
+            intParam('teacherId', teacherId),
+        ])).recordset,
+
+    findLesson: async (lessonId, teacherId, e = pool) =>
+        (await exec(e, SQL_FIND_LESSON, [
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
+
+    findClass: async (classId, teacherId, e = pool) =>
+        (await exec(e, SQL_LESSON_CLASS_CHECK, [
+            intParam('classId', classId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
+
+    getOcrText: async (lessonId, teacherId, e = pool) =>
+        (await exec(e, SQL_LESSON_OCR_TEXT, [
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
+
+    getSchemeForReuse: async (lessonId, teacherId, e = pool) =>
+        (await exec(e, SQL_LESSON_SCHEME_FOR_REUSE, [
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
+
+    // Saves which question index the teacher selected for a multi-question paper.
+    // Ownership enforced via the same lessons -> classes -> teacher_id join used
+    // everywhere else in this file, not just trusted from the request.
+    updateSelectedQuestion: async (lessonId, teacherId, index, e = pool) =>
+        exec(e, `
+            UPDATE t
+            SET t.selected_question_index = @index
+            FROM dbo.teacher_ocr AS t
+            JOIN dbo.lessons AS l ON t.lesson_id = l.id
+            JOIN dbo.classes AS c ON l.class_id = c.id
+            WHERE l.id = @lessonId AND c.teacher_id = @teacherId
+        `, [
+            intParam('index', index),
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ]),
+
+    // Insert the lesson and OCR row, then link them atomically. Both extracted
+    // scheme representations come from main.py's /ocr and are stored for
+    // future marking and segmentation work.
+    createLesson: async (
+        lessonTitle,
+        classId,
+        fileName,
+        mimeType,
+        ocrText,
+        structuredScheme,
+        threadExtraction
+    ) =>
+        inTransaction(async (transaction) => {
+            const lesson = (await exec(transaction, `
+                INSERT INTO dbo.lessons (
+                    lesson_title,
+                    class_id,
+                    mark_scheme_file_name,
+                    mark_scheme_mime_type
+                )
+                OUTPUT INSERTED.id
+                VALUES (@lessonTitle, @classId, @fileName, @mimeType)
+            `, [
+                textParam('lessonTitle', 255, lessonTitle),
+                intParam('classId', classId),
+                textParam('fileName', 255, fileName),
+                textParam('mimeType', 100, mimeType),
+            ])).recordset[0]
+
+            const ocr = (await exec(transaction, `
+                INSERT INTO dbo.teacher_ocr (
+                    lesson_id,
+                    ocr_text,
+                    structured_scheme,
+                    thread_extraction
+                )
+                OUTPUT INSERTED.id
+                VALUES (
+                    @lessonId,
+                    @ocrText,
+                    @structuredScheme,
+                    @threadExtraction
+                )
+            `, [
+                intParam('lessonId', lesson.id),
+                textParam('ocrText', sql.MAX, ocrText),
+                textParam('structuredScheme', sql.MAX, structuredScheme ?? ''),
+                textParam('threadExtraction', sql.MAX, threadExtraction ?? ''),
+            ])).recordset[0]
+
+            console.log(
+                `[THREAD EXTRACTION][BACKEND] 4/5 Inserting thread extraction into teacher_ocr — ocr_id=${ocr.id}, characters=${(threadExtraction ?? '').length}`
+            )
+
+            const storedThreadExtraction = (await exec(transaction, `
+                SELECT
+                    DATALENGTH(thread_extraction) AS thread_extraction_bytes,
+                    thread_extraction
+                FROM dbo.teacher_ocr
+                WHERE id = @ocrId
+            `, [
+                intParam('ocrId', ocr.id),
+            ])).recordset[0]
+
+            console.log(
+                `[THREAD EXTRACTION][BACKEND] 5/5 SQL readback confirmed — ocr_id=${ocr.id}, stored_bytes=${storedThreadExtraction?.thread_extraction_bytes ?? 0}`
+            )
+
+            await exec(transaction, `
+                UPDATE dbo.lessons
+                SET mark_scheme_ocr = @ocrId
+                WHERE id = @lessonId
+            `, [
+                intParam('ocrId', ocr.id),
+                intParam('lessonId', lesson.id),
+            ])
+
+            return lesson.id
+        }),
 }
 
-// Least-privilege accessor for the classes flow only.
-// Covers all class and student CRUD operations.
-// classes.js imports this instead of the raw db connection.
-const _listClasses              = db.prepare(`
-    SELECT c.id, c.class_name, c.year_group_id, COUNT(s.id) AS student_count
-    FROM classes c
-    LEFT JOIN students s ON s.class_id = c.id
-    WHERE c.teacher_id = ?
-    GROUP BY c.id
-    ORDER BY c.class_name
-`)
-const _findClassById            = db.prepare('SELECT id, class_name, year_group_id FROM classes WHERE id = ? AND teacher_id = ?')
-const _findClassByName          = db.prepare('SELECT id FROM classes WHERE class_name = ? AND teacher_id = ?')
-const _findClassByNameExcluding = db.prepare('SELECT id FROM classes WHERE class_name = ? AND teacher_id = ? AND id != ?')
-const _validateYear             = db.prepare('SELECT id FROM year_groups WHERE id = ?')
-const _insertClass              = db.prepare('INSERT INTO classes (class_name, year_group_id, teacher_id) VALUES (?, ?, ?)')
-const _updateClass              = db.prepare('UPDATE classes SET class_name = ?, year_group_id = ? WHERE id = ?')
-const _listStudents             = db.prepare('SELECT id, student_name FROM students WHERE class_id = ? ORDER BY student_name')
-const _findStudentByName        = db.prepare('SELECT id FROM students WHERE student_name = ? AND class_id = ?')
-const _findStudentByNameExcluding = db.prepare('SELECT id FROM students WHERE student_name = ? AND class_id = ? AND id != ?')
-const _findStudentById          = db.prepare('SELECT id FROM students WHERE id = ? AND class_id = ?')
-const _insertStudent            = db.prepare('INSERT INTO students (student_name, class_id) VALUES (?, ?)')
-const _updateStudent            = db.prepare('UPDATE students SET student_name = ? WHERE id = ?')
-const _delMarkingResults        = db.prepare('DELETE FROM marking_results WHERE student_id = ?')
-const _delStudentOcr            = db.prepare('DELETE FROM student_ocr WHERE file_id IN (SELECT id FROM student_files WHERE student_id = ?)')
-const _delStudentFiles          = db.prepare('DELETE FROM student_files WHERE student_id = ?')
-const _delStudent               = db.prepare('DELETE FROM students WHERE id = ?')
+// Least-privilege application accessor for a student's marked work.
+export const markingDb = {
+    // Confirms the student belongs to a class that owns this lesson, and that
+    // the lesson belongs to this teacher — ownership chain check before
+    // marking runs, not just trusted from the request body.
+    validateStudent: async (studentId, lessonId, teacherId, e = pool) =>
+        (await exec(e, `
+            SELECT s.id
+            FROM dbo.students AS s
+            JOIN dbo.classes AS c ON c.id = s.class_id
+            JOIN dbo.lessons AS l ON l.class_id = c.id
+            WHERE s.id = @studentId AND l.id = @lessonId AND c.teacher_id = @teacherId
+        `, [
+            intParam('studentId', studentId),
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
 
-const _deleteStudentTx = db.transaction((studentId) => {
-    _delMarkingResults.run(studentId)
-    _delStudentOcr.run(studentId)
-    _delStudentFiles.run(studentId)
-    _delStudent.run(studentId)
-})
+    // Transaction: upsert a student's mark — delete any previous result for
+    // this student/lesson pair (re-marking replaces, it doesn't accumulate),
+    // then insert the new file, OCR, and grade rows in FK order.
+    markStudent: async (
+        studentId,
+        lessonId,
+        fileName,
+        mimeType,
+        ocrText,
+        gradeJson,
+        aggregationResultJson = null,
+        finalResultJson = null
+    ) =>
+        inTransaction(async (transaction) => {
+            const existing = (await exec(transaction, `
+                SELECT mr.ocr_id, so.file_id
+                FROM dbo.marking_results AS mr
+                JOIN dbo.student_ocr AS so ON so.id = mr.ocr_id
+                WHERE mr.lesson_id = @lessonId AND mr.student_id = @studentId
+            `, [
+                intParam('lessonId', lessonId),
+                intParam('studentId', studentId),
+            ])).recordset
 
+            if (existing.length > 0) {
+                const { ocr_id, file_id } = existing[0]
+
+                await exec(transaction, `
+                    DELETE FROM dbo.marking_results
+                    WHERE lesson_id = @lessonId AND student_id = @studentId
+                `, [
+                    intParam('lessonId', lessonId),
+                    intParam('studentId', studentId),
+                ])
+                await exec(transaction, `
+                    DELETE FROM dbo.student_ocr WHERE id = @ocrId
+                `, [intParam('ocrId', ocr_id)])
+                await exec(transaction, `
+                    DELETE FROM dbo.student_files WHERE id = @fileId
+                `, [intParam('fileId', file_id)])
+            }
+
+            const file = (await exec(transaction, `
+                INSERT INTO dbo.student_files (student_id, lesson_id, file_name, mime_type)
+                OUTPUT INSERTED.id
+                VALUES (@studentId, @lessonId, @fileName, @mimeType)
+            `, [
+                intParam('studentId', studentId),
+                intParam('lessonId', lessonId),
+                textParam('fileName', 255, fileName),
+                textParam('mimeType', 100, mimeType),
+            ])).recordset[0]
+
+            const ocr = (await exec(transaction, `
+                INSERT INTO dbo.student_ocr (file_id, ocr_text)
+                OUTPUT INSERTED.id
+                VALUES (@fileId, @ocrText)
+            `, [
+                intParam('fileId', file.id),
+                textParam('ocrText', sql.MAX, ocrText),
+            ])).recordset[0]
+
+            await exec(transaction, `
+                INSERT INTO dbo.marking_results (
+                    lesson_id,
+                    student_id,
+                    ocr_id,
+                    student_grade,
+                    aggregation_result,
+                    final_result
+                )
+                VALUES (
+                    @lessonId,
+                    @studentId,
+                    @ocrId,
+                    @grade,
+                    @aggregationResult,
+                    @finalResult
+                )
+            `, [
+                intParam('lessonId', lessonId),
+                intParam('studentId', studentId),
+                intParam('ocrId', ocr.id),
+                textParam('grade', sql.MAX, gradeJson),
+                nullableTextParam('aggregationResult', sql.MAX, aggregationResultJson),
+                nullableTextParam('finalResult', sql.MAX, finalResultJson),
+            ])
+        }),
+
+    // Lightweight true/false check for whether a result already exists for
+    // this student in this lesson — a student can belong to multiple
+    // lessons, so both ids are required to identify the right row. Scoped
+    // to the teacher's own classes, same join as getResults/validateStudent.
+    // Only checks presence of student_grade, never returns its contents.
+    checkResultPresence: async (studentId, lessonId, teacherId, e = pool) => {
+        const result = (await exec(e, `
+            SELECT mr.student_grade
+            FROM dbo.marking_results AS mr
+            JOIN dbo.lessons AS l ON l.id = mr.lesson_id
+            JOIN dbo.classes AS c ON c.id = l.class_id
+            WHERE mr.lesson_id = @lessonId AND mr.student_id = @studentId AND c.teacher_id = @teacherId
+        `, [
+            intParam('lessonId', lessonId),
+            intParam('studentId', studentId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0]
+
+        return result?.student_grade != null
+    },
+
+    // Fetch all marking results for a lesson, scoped to the teacher's own classes.
+    getResults: async (lessonId, teacherId, e = pool) =>
+        (await exec(e, `
+            SELECT mr.student_id, mr.student_grade, mr.aggregation_result,
+                   mr.final_result, mr.marked_at
+            FROM dbo.marking_results AS mr
+            JOIN dbo.lessons AS l ON l.id = mr.lesson_id
+            JOIN dbo.classes AS c ON c.id = l.class_id
+            WHERE mr.lesson_id = @lessonId AND c.teacher_id = @teacherId
+        `, [
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ])).recordset,
+}
+
+// Durable lifecycle for asynchronous marking. The backend creates a queued
+// job before publishing it, then exposes the worker-owned status through an
+// ownership-scoped read route.
+export const markingJobDb = {
+    createQueued: async (teacherId, lessonId, studentId, e = pool) =>
+        (await exec(e, `
+            INSERT INTO dbo.marking_jobs (teacher_id, lesson_id, student_id, status)
+            OUTPUT CONVERT(NVARCHAR(36), INSERTED.job_id) AS job_id
+            VALUES (@teacherId, @lessonId, @studentId, N'queued')
+        `, [
+            intParam('teacherId', teacherId),
+            intParam('lessonId', lessonId),
+            intParam('studentId', studentId),
+        ])).recordset[0],
+
+    // If queue publication fails, remove the not-yet-published row so SQL
+    // does not claim that work is queued when Service Bus never accepted it.
+    deleteQueued: async (jobId, e = pool) =>
+        exec(e, `
+            DELETE FROM dbo.marking_jobs
+            WHERE job_id = @jobId AND status = N'queued'
+        `, [uuidParam('jobId', jobId)]),
+
+    listLatestForLesson: async (lessonId, teacherId, e = pool) =>
+        (await exec(e, `
+            WITH latest_jobs AS (
+                SELECT
+                    mj.job_id,
+                    mj.student_id,
+                    mj.status,
+                    mj.queued_at,
+                    mj.processing_at,
+                    mj.marking_at,
+                    mj.completed_at,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY mj.student_id
+                        ORDER BY mj.queued_at DESC, mj.job_id DESC
+                    ) AS row_number
+                FROM dbo.marking_jobs AS mj
+                JOIN dbo.lessons AS l ON l.id = mj.lesson_id
+                JOIN dbo.classes AS c ON c.id = l.class_id
+                WHERE mj.lesson_id = @lessonId
+                  AND mj.teacher_id = @teacherId
+                  AND c.teacher_id = @teacherId
+            )
+            SELECT
+                CONVERT(NVARCHAR(36), job_id) AS job_id,
+                student_id,
+                status,
+                queued_at,
+                processing_at,
+                marking_at,
+                completed_at
+            FROM latest_jobs
+            WHERE row_number = 1
+        `, [
+            intParam('lessonId', lessonId),
+            intParam('teacherId', teacherId),
+        ])).recordset,
+}
+
+// Every class/student method keeps the same optional executor signature so the
+// route layer can compose multiple accessors into one mssql transaction.
 export const classDb = {
-    listClasses:               (teacherId)                         => _listClasses.all(teacherId),
-    findClassById:             (classId, teacherId)                => _findClassById.get(classId, teacherId),
-    findClassByName:           (className, teacherId)              => _findClassByName.get(className, teacherId),
-    findClassByNameExcluding:  (className, teacherId, classId)     => _findClassByNameExcluding.get(className, teacherId, classId),
-    validateYear:              (yearId)                            => _validateYear.get(yearId),
-    insertClass:               (className, yearGroupId, teacherId) => _insertClass.run(className, yearGroupId, teacherId),
-    updateClass:               (className, yearGroupId, classId)   => _updateClass.run(className, yearGroupId, classId),
-    listStudents:              (classId)                           => _listStudents.all(classId),
-    findStudentByName:         (studentName, classId)              => _findStudentByName.get(studentName, classId),
-    findStudentByNameExcluding:(studentName, classId, studentId)   => _findStudentByNameExcluding.get(studentName, classId, studentId),
-    findStudentById:           (studentId, classId)                => _findStudentById.get(studentId, classId),
-    insertStudent:             (studentName, classId)              => _insertStudent.run(studentName, classId),
-    updateStudent:             (studentName, studentId)            => _updateStudent.run(studentName, studentId),
-    deleteStudent:             (studentId)                         => _deleteStudentTx(studentId),
-    transaction:               (fn)                                => db.transaction(fn)(),
-}
+    listClasses: async (teacherId, e = pool) =>
+        (await exec(e, `
+            SELECT
+                c.id,
+                c.class_name,
+                c.year_group_id,
+                CAST(COUNT(s.id) AS INT) AS student_count
+            FROM dbo.classes AS c
+            LEFT JOIN dbo.students AS s ON s.class_id = c.id
+            WHERE c.teacher_id = @teacherId
+            GROUP BY c.id, c.class_name, c.year_group_id
+            ORDER BY c.class_name
+        `, [
+            intParam('teacherId', teacherId),
+        ])).recordset,
 
-export default db
+    findClassById: async (classId, teacherId, e = pool) =>
+        (await exec(e, `
+            SELECT id, class_name, year_group_id
+            FROM dbo.classes
+            WHERE id = @classId AND teacher_id = @teacherId
+        `, [
+            intParam('classId', classId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
+
+    findClassByName: async (className, teacherId, e = pool) =>
+        (await exec(e, `
+            SELECT id
+            FROM dbo.classes
+            WHERE class_name = @className AND teacher_id = @teacherId
+        `, [
+            textParam('className', 100, className),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
+
+    findClassByNameExcluding: async (className, teacherId, classId, e = pool) =>
+        (await exec(e, `
+            SELECT id
+            FROM dbo.classes
+            WHERE class_name = @className
+              AND teacher_id = @teacherId
+              AND id <> @classId
+        `, [
+            textParam('className', 100, className),
+            intParam('teacherId', teacherId),
+            intParam('classId', classId),
+        ])).recordset[0],
+
+    validateYear: async (yearId, e = pool) =>
+        (await exec(e, `
+            SELECT id
+            FROM dbo.year_groups
+            WHERE id = @yearId
+        `, [
+            intParam('yearId', yearId),
+        ])).recordset[0],
+
+    insertClass: async (className, yearGroupId, teacherId, e = pool) =>
+        (await exec(e, `
+            INSERT INTO dbo.classes (class_name, year_group_id, teacher_id)
+            OUTPUT INSERTED.id
+            VALUES (@className, @yearGroupId, @teacherId)
+        `, [
+            textParam('className', 100, className),
+            intParam('yearGroupId', yearGroupId),
+            intParam('teacherId', teacherId),
+        ])).recordset[0],
+
+    updateClass: async (className, yearGroupId, classId, e = pool) =>
+        exec(e, `
+            UPDATE dbo.classes
+            SET class_name = @className, year_group_id = @yearGroupId
+            WHERE id = @classId
+        `, [
+            textParam('className', 100, className),
+            intParam('yearGroupId', yearGroupId),
+            intParam('classId', classId),
+        ]),
+
+    listStudents: async (classId, e = pool) =>
+        (await exec(e, `
+            SELECT id, student_name
+            FROM dbo.students
+            WHERE class_id = @classId
+            ORDER BY student_name
+        `, [
+            intParam('classId', classId),
+        ])).recordset,
+
+    findStudentByName: async (studentName, classId, e = pool) =>
+        (await exec(e, `
+            SELECT id
+            FROM dbo.students
+            WHERE student_name = @studentName AND class_id = @classId
+        `, [
+            textParam('studentName', 100, studentName),
+            intParam('classId', classId),
+        ])).recordset[0],
+
+    findStudentByNameExcluding: async (studentName, classId, studentId, e = pool) =>
+        (await exec(e, `
+            SELECT id
+            FROM dbo.students
+            WHERE student_name = @studentName
+              AND class_id = @classId
+              AND id <> @studentId
+        `, [
+            textParam('studentName', 100, studentName),
+            intParam('classId', classId),
+            intParam('studentId', studentId),
+        ])).recordset[0],
+
+    findStudentById: async (studentId, classId, e = pool) =>
+        (await exec(e, `
+            SELECT id
+            FROM dbo.students
+            WHERE id = @studentId AND class_id = @classId
+        `, [
+            intParam('studentId', studentId),
+            intParam('classId', classId),
+        ])).recordset[0],
+
+    insertStudent: async (studentName, classId, e = pool) =>
+        (await exec(e, `
+            INSERT INTO dbo.students (student_name, class_id)
+            OUTPUT INSERTED.id
+            VALUES (@studentName, @classId)
+        `, [
+            textParam('studentName', 100, studentName),
+            intParam('classId', classId),
+        ])).recordset[0],
+
+    updateStudent: async (studentName, studentId, e = pool) =>
+        exec(e, `
+            UPDATE dbo.students
+            SET student_name = @studentName
+            WHERE id = @studentId
+        `, [
+            textParam('studentName', 100, studentName),
+            intParam('studentId', studentId),
+        ]),
+
+    // Delete the student and their derived data in foreign-key-safe order.
+    deleteStudent: async (studentId) =>
+        inTransaction(async (transaction) => {
+            await exec(transaction, `
+                DELETE FROM dbo.marking_results
+                WHERE student_id = @studentId
+            `, [intParam('studentId', studentId)])
+
+            await exec(transaction, `
+                DELETE FROM dbo.student_ocr
+                WHERE file_id IN (
+                    SELECT id
+                    FROM dbo.student_files
+                    WHERE student_id = @studentId
+                )
+            `, [intParam('studentId', studentId)])
+
+            await exec(transaction, `
+                DELETE FROM dbo.student_files
+                WHERE student_id = @studentId
+            `, [intParam('studentId', studentId)])
+
+            await exec(transaction, `
+                DELETE FROM dbo.students
+                WHERE id = @studentId
+            `, [intParam('studentId', studentId)])
+        }),
+
+    // Execute fn atomically. fn receives an mssql Transaction which can be
+    // passed unchanged to any accessor's optional executor argument.
+    transaction: (fn) => inTransaction(fn),
+}

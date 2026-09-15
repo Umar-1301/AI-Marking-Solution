@@ -1,3 +1,17 @@
+# Keep the build context small; never copy secrets, deps, or build output.
+
+# Env — secrets AND example templates, never bake into the image
+.env
+.env.*
+
+# Deps and build output — regenerated in the image
 node_modules
 dist
-.env
+dist-ssr
+
+# Git, IDE, OS
+.git
+.gitignore
+.dockerignore
+.vscode
+.DS_Store

@@ -1,10 +1,25 @@
+# Superpowers brainstorming companion — local mockup/session scratch, never committed
+.superpowers/
+
+# Local Claude Code project instructions — not committed
+CLAUDE.md
+
 # Dependencies
 **/node_modules/
+# workers/node_modules is a symlink to workers/package/node_modules (see
+# workers/package/ layout) — the trailing-slash pattern above only matches
+# real directories, not symlinks, so it needs its own explicit entry.
+workers/node_modules
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/.pnpm-store/
 
-# Environment files — contain secrets, never commit
+# Environment files — never commit (secrets AND example templates)
 **/.env
-**/.env.local
-**/.env.*.local
+**/.env.*
+**/local.env
+**/local.env.*
 
 # User credentials store — contains hashed passwords
 backend/src/data/users.json
@@ -18,19 +33,19 @@ backend/src/data/*.sqlite-journal
 backend/src/data/*.sqlite-wal
 backend/src/data/*.sqlite-shm
 
-# Python virtual environment (both naming conventions)
-ai-service/venv/
-.venv/
-ai-service/__pycache__/
-ai-service/**/__pycache__/
-**/*.pyc
+# Python — virtualenvs, bytecode, and tool caches
+**/venv/
+**/.venv/
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
 
 # Frontend build output
 frontend/dist/
 frontend/dist-ssr/
-
-# Local dev environment config (machine-specific device and model settings)
-ai-service/local.env
 
 # IDE settings (local to each developer)
 .vscode/
@@ -43,7 +58,15 @@ Security-Assessment.md
 npm-debug.log*
 backend/logs/*
 !backend/logs/.gitkeep
+workers/logs/*
+!workers/logs/.gitkeep
+
+# Ad-hoc debug output — temporary inspection only, never committed.
+backend/.tmp/
+# Descriptor validation comparison dumps. Contains verbatim mark-scheme
+# descriptor text (exam board material) and grows per band, per extraction.
+ai-service/observability/descriptor_validation_debug.txt
 
 # OS
-.DS_Store
+**/.DS_Store
 Thumbs.db

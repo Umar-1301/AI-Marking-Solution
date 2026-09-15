@@ -1,21 +1,24 @@
-# Deps are reinstalled in the image; never copy the host's.
+# Keep the build context small; never copy secrets, deps, or host-specific files.
+
+# Env — secrets AND example templates, never bake into the image
+.env
+.env.*
+
+# Deps — reinstalled in the image; never copy the host's
 node_modules
 
-# Secrets and machine-local config — supplied as env vars at deploy time.
-.env
+# Secrets / local data on disk
 src/data/pepper.json
-
-# Local SQLite DB + WAL/SHM companions — a fresh one is created on boot (I4).
-src/data/*.sqlite
-src/data/*.sqlite-shm
-src/data/*.sqlite-wal
-src/data/*.sqlite-journal
-
-# Legacy flat-file accounts — excluding it means a clean DB with no stale migration.
 src/data/users.json
+src/data/*.sqlite*
 
-# Local logs — the container writes its own.
+# Local logs — the container writes its own
 logs
 
+# Git, IDE, OS
+.git
+.gitignore
+.dockerignore
+.vscode
 .DS_Store
 npm-debug.log*

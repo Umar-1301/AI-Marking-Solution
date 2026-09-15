@@ -1,55 +1,28 @@
-# ---- Chandra OCR service: Azure GPU production image (linux/amd64) ----
-# Chandra is a vision-transformer OCR model. Local testing proved CPU inference
-# is ~5-7 min/page (unusable); on a GPU it runs in seconds. This image therefore
-# targets an NVIDIA GPU on Azure Container Apps (serverless GPU, e.g. T4).
+# ---- ai-service: OCR via Azure AI Document Intelligence ----
+# A thin FastAPI service that forwards documents to Document Intelligence. No local
+# model and no GPU, so this is a small slim image (the old CUDA + baked-weights
+# image is gone).
 #
-# Cross-build from an arm64 Mac and push straight to Azure Container Registry:
-#   docker buildx build --platform linux/amd64 \
-#     -t <registry>.azurecr.io/chandra-ocr:<tag> --push .
-#
-# It cannot be run locally (no NVIDIA GPU on the Mac) — first real run is on Azure.
-# Deploy with internal ingress only: the backend reaches it via AI_SERVICE_URL,
-# the browser never touches it.
-
-# CUDA 13 runtime — matches the cu13 libraries torch 2.11 bundles (seen in the
-# build: cuda_toolkit-13.0.2 / nvidia_cudnn_cu13). cudnn is included in this tag.
-# VERIFY this CUDA version against Azure's current serverless-GPU host driver
-# before release.
-FROM nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04
-
-# Python + the native libs Pillow / pypdfium2 link against.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        python3 python3-pip \
-        libgl1 libglib2.0-0 \
-    && rm -rf /var/lib/apt/lists/*
+# Secrets are NOT baked in. At runtime the container reads AZURE_DOCINTEL_ENDPOINT
+# and AZURE_DOCINTEL_KEY from the environment, injected from Azure Key Vault via the
+# container's managed identity — never from local.env (which is dev-only and
+# excluded by .dockerignore).
+FROM python:3.11-slim
 
 WORKDIR /app
 
-# TORCH_DEVICE=cuda runs the model on the GPU (the whole point of this image).
-# HF_HOME is where the baked weights live. PIP_BREAK_SYSTEM_PACKAGES bypasses
-# Ubuntu 24.04's PEP 668 guard so we can pip-install into the system interpreter.
-ENV TORCH_DEVICE=cuda \
-    TORCH_ATTN=eager \
-    HF_HOME=/models \
-    PYTHONUNBUFFERED=1 \
-    PIP_BREAK_SYSTEM_PACKAGES=1
+# PYTHONUNBUFFERED: log lines flush immediately (so container logs are live).
+# PYTHONDONTWRITEBYTECODE: no .pyc clutter in the image layer.
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
-# Python deps. On linux/amd64 the pinned torch resolves to the CUDA build
-# automatically — same requirements.txt as local, correct platform/base (I5).
+# Install deps first so this layer caches unless requirements.txt changes.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Bake the model weights into the image. snapshot_download is a pure file pull
-# (no model construction), so it needs no GPU at build time. ~5.6 GB — this is
-# the layer that makes the image large but cold starts predictable.
-RUN python3 -c "from huggingface_hub import snapshot_download; snapshot_download('datalab-to/chandra-ocr-2')"
-
+# Copy the application (local.env / .env are excluded via .dockerignore).
 COPY . .
 
-# Load weights from the baked cache only — never reach out to Hugging Face at
-# runtime, so a blocked/slow HF can't stall a cold start.
-ENV HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1
-
+# Internal ingress only in production — the backend calls this, the browser never does.
 EXPOSE 8000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

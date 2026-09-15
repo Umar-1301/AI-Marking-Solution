@@ -1,12 +1,29 @@
-# Keep the build context small and never copy host-specific or secret files.
+# Keep the build context small; never copy secrets, deps, or host-specific files.
+
+# Env — secrets AND example templates, never bake into the image
+.env
+.env.*
+local.env
+local.env.*
+
+# Python — virtualenvs, bytecode, tool caches (deps installed fresh in the image)
 .venv
 venv
 **/__pycache__
-*.pyc
-.env
-local.env            # contains TORCH_DEVICE=mps — must not override the image's cpu setting
-.DS_Store
-samples              # test images are sent from the host via curl, not baked in
-*.csv                # docker stats output
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+
+# Local test / dev artifacts
+samples
+*.csv
 chandra-response.json
 pyrightconfig.json
+
+# Git, IDE, OS
+.git
+.gitignore
+.dockerignore
+.vscode
+.DS_Store

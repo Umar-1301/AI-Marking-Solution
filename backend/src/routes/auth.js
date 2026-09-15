@@ -116,7 +116,7 @@ router.post('/signup', async (req, res, next) => {
         if (blacklist.has(password.toLowerCase())) {
             return res.status(400).json({ error: 'This password is too common. Please choose a more unique password.' })
         }
-        if (findByEmail(email)) {
+        if (await findByEmail(email)) {
             return res.status(400).json({ error: 'Unable to create account. Please check your details.' })
         }
 
@@ -156,7 +156,7 @@ router.post('/login', async (req, res, next) => {
             return res.status(401).json({ error: 'Invalid email or password' })
         }
 
-        const record = findByEmail(email)
+        const record = await findByEmail(email)
         if (!record) {
             recordFailedAttempt(emailKey)
             return res.status(401).json({ error: 'Invalid email or password' })

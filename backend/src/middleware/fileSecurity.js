@@ -93,9 +93,3 @@ export function makeFileSecurity(slots) {
         next()
     }
 }
-
-// Default two-slot export used by the upload route — behaviour unchanged.
-export const fileSecurity = makeFileSecurity([
-    { field: 'studentWork', label: 'Student Work' },
-    { field: 'markScheme',  label: 'Mark Scheme'  },
-])
