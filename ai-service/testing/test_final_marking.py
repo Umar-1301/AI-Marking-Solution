@@ -475,7 +475,8 @@ class FinalMarkingServiceTests(unittest.TestCase):
             self.assertNotIn("Prior", wrapped)
             return resolve_final_marking_result(output(), context)
 
-        with patch.object(self.main, "extract_student_ocr", return_value={"handwritten_work": "Student work"}), \
+        with patch.object(self.main, "extract_student_ocr_with_raw", return_value=({"handwritten_work": "Student work"}, {"pages": []})), \
+             patch.object(self.main, "save_raw_student_ocr_response"), \
              patch.object(self.main, "get_similar", return_value=[]), \
              patch.object(self.main, "generate_llm_response", side_effect=holistic), \
              patch.object(self.main, "generate_aggregation_response", side_effect=aggregate), \
@@ -496,7 +497,8 @@ class FinalMarkingServiceTests(unittest.TestCase):
         diagnostic.pop("delimiter_token")
         diagnostic = reconcile_final_score(diagnostic)
 
-        with patch.object(self.main, "extract_student_ocr", return_value={"handwritten_work": "Student work"}), \
+        with patch.object(self.main, "extract_student_ocr_with_raw", return_value=({"handwritten_work": "Student work"}, {"pages": []})), \
+             patch.object(self.main, "save_raw_student_ocr_response"), \
              patch.object(self.main, "get_similar", return_value=[]), \
              patch.object(self.main, "generate_llm_response", return_value={
                  "score": 5, "maxScore": 6,

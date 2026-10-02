@@ -33,12 +33,15 @@ backend/src/data/*.sqlite-journal
 backend/src/data/*.sqlite-wal
 backend/src/data/*.sqlite-shm
 
-# Private keys, certificates and Terraform state — state files can embed secrets.
-# (infra/ lives outside this repo; this guards against a copy landing inside it.)
+# Terraform infra lives in its own folder and is not versioned in this repo.
+infra/
+
+# Private keys, certificates and Terraform working data — state files can embed secrets.
 *.pem
 *.key
 *.pfx
 *.p12
+**/.terraform/
 *.tfstate
 *.tfstate.*
 

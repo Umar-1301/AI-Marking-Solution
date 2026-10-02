@@ -30,7 +30,7 @@ from llm_service import (
     generate_llm_response,
 )
 from ocr_service import extract_text_from_file
-from student_ocr_service import extract_student_ocr
+from student_ocr_service import extract_student_ocr_with_raw
 from rag_service import add_exemplar, get_similar, list_exemplars, delete_exemplar
 from security import ms_ocr_sanitisation
 from validation.descriptor_id_enrichment import add_descriptor_ids
@@ -48,6 +48,7 @@ from observability.event_log import (
     log_security_stripped,
     log_student_ocr_done,
 )
+from observability.raw_response_capture import save_raw_student_ocr_response
 
 # When Umar's Chandra OCR is available, swap these two lines back in:
 # from model.marker import run_marking
@@ -204,7 +205,11 @@ async def mark_with_scheme_text(
     thread_extraction: str        = Form(default='')
 ):
     student_bytes = await student_work.read()
-    structured_ocr = extract_student_ocr(student_bytes, student_work.filename)
+    structured_ocr, raw_ocr = extract_student_ocr_with_raw(
+        student_bytes,
+        student_work.filename,
+    )
+    save_raw_student_ocr_response(structured_ocr, raw_ocr)
     raw_text       = structured_ocr.get("handwritten_work", "")
     log_student_ocr_done(len(raw_text))
 
