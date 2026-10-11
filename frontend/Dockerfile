@@ -12,6 +12,7 @@ FROM nginx:1.27-alpine
 # Default for local docker-compose testing — override with the backend
 # Container App's internal URL when deploying to Azure.
 ENV BACKEND_URL=http://backend:3001
+ENV BLOB_ORIGIN=http://127.0.0.1:10000
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf.template /etc/nginx/templates/default.conf.template

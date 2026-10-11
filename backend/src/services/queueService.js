@@ -33,6 +33,8 @@ const serviceBusClient = config.AZURE_SERVICEBUS_CONNECTION_STRING
 
 const STUDENT_MARKING_QUEUE = 'student-marking'
 const studentMarkingSender = serviceBusClient.createSender(STUDENT_MARKING_QUEUE)
+export const MARK_SCHEME_QUEUE = 'mark-scheme-processing'
+const markSchemeSender = serviceBusClient.createSender(MARK_SCHEME_QUEUE)
 
 // Sends a verified marking request to the worker. The route is responsible
 // for authorising every identifier and confirming the Blob exists before it
@@ -42,6 +44,15 @@ export async function sendStudentMarkingRequest(request) {
         body: request,
         contentType: 'application/json',
         subject: 'student-marking-request',
+    })
+}
+
+export async function sendMarkSchemeRequest(jobId) {
+    await markSchemeSender.sendMessages({
+        body: { jobId },
+        contentType: 'application/json',
+        subject: 'mark-scheme-processing-request',
+        messageId: jobId,
     })
 }
 

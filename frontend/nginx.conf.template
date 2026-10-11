@@ -6,6 +6,7 @@
 # $scheme, $uri) are left untouched since they aren't OS environment variables.
 # ${NGINX_RESOLVER} and ${BACKEND_HOST} are exported by
 # docker-entrypoint.d/15-resolver.envsh before envsubst runs.
+# BLOB_ORIGIN is the exact browser-visible Storage origin used by SAS URLs.
 
 server {
     listen 80;
@@ -66,7 +67,7 @@ server {
         # Security headers scoped to the pages nginx serves. /api responses are
         # intentionally NOT given these — the backend's helmet already sets them,
         # so scoping here avoids duplicate/conflicting headers on proxied responses.
-        add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
+        add_header Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' ${BLOB_ORIGIN}; base-uri 'self'; form-action 'self'; frame-ancestors 'none'" always;
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-Frame-Options "DENY" always;
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;

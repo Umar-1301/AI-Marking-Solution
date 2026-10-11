@@ -102,6 +102,37 @@ export async function createLesson(classId, markSchemeFile, onEvent = () => { })
     return result
 }
 
+export async function createMarkSchemeJob(classId, file) {
+    const response = await fetch(`${API_BASE}/lessons/mark-scheme-jobs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ classId, fileName: file.name, mimeType: file.type }),
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to prepare mark scheme upload')
+    return data
+}
+
+export async function queueMarkSchemeJob(jobId) {
+    const response = await fetch(`${API_BASE}/lessons/mark-scheme-jobs/${jobId}/queue`, {
+        method: 'POST',
+        credentials: 'include',
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to queue mark scheme')
+    return data
+}
+
+export async function getMarkSchemeJob(jobId) {
+    const response = await fetch(`${API_BASE}/lessons/mark-scheme-jobs/${jobId}`, {
+        credentials: 'include',
+    })
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to check mark scheme status')
+    return data
+}
+
 // Clones a previous lesson's already-extracted mark scheme into a new lesson
 // for the given class — no re-OCR. Returns the same shape createLesson's
 // streamed 'done' event does, so callers can branch on has_multiple_questions

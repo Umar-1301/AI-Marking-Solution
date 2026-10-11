@@ -439,3 +439,13 @@ Three new pages: **Home** (class selection, mark scheme upload, NDJSON-driven pr
 | Middleware | inputSecurity (prototype pollution, depth, array, string), file security (MIME + magic byte + size) |
 | Route handlers | Ownership checks on every class/student operation, year validation, duplicate detection |
 | Frontend | React JSX escaping, sanitiseInput + containsHtml + validatePayload before API calls, maxLength on all inputs |
+
+---
+
+### Asynchronous mark scheme uploads
+
+The Home page now creates a `dbo.mark_scheme_jobs` row when **Begin marking** is clicked. SQL generates the job ID. The backend returns a ten-minute SAS URL for `mark-schemes/<teacherId>/<jobId>/source`; the browser uploads the file directly to Blob Storage, then asks the backend to queue the job. The backend confirms the blob exists and sends `{ jobId }` to the `mark-scheme-processing` Service Bus queue. A receiver in the backend downloads the file, calls the OCR service, creates the lesson and OCR rows, and completes the job in one SQL transaction. Home polls `GET /lessons/mark-scheme-jobs/:jobId` for `queued`, `processing`, `ocr`, `complete`, or `failed` and navigates after completion. The previous mark scheme reuse path continues to create lessons without OCR.
+
+For local development, start `mssql`, `azurite`, and `servicebus-emulator`, then run `npm run db:init` and `npm run blob:init` from `backend/`. Recreate the Service Bus emulator after changing `backend/servicebus/config.json` so it loads the new queue. The backend process subscribes to the queue on startup; no additional Docker image is needed.
+
+For Azure, apply the `mark_scheme_jobs` schema to the application SQL database, create a private `mark-schemes` Blob container and `mark-scheme-processing` Service Bus queue, and allow the frontend origin in Storage CORS. Set the frontend container's `BLOB_ORIGIN` to the exact origin of `AZURE_STORAGE_ACCOUNT_URL` so its Content Security Policy permits direct uploads.

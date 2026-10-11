@@ -1,4 +1,4 @@
-// Creates the blob container Klassio uses for student work uploads. Local-dev
+// Creates the private blob containers for student work and mark schemes. Local-dev
 // equivalent of `npm run db:init` for the SQL schema — except there's no
 // separate DDL to apply, container creation is the entire "schema" (see the
 // container-vs-container discussion: a blob container has no columns, no
@@ -17,7 +17,7 @@ if (!config.AZURE_STORAGE_CONNECTION_STRING) {
     )
 }
 
-const CONTAINER_NAME = 'student-work'
+const CONTAINER_NAMES = ['student-work', 'mark-schemes']
 
 // Local dev only — the frontend origin allowed to PUT straight to blob
 // storage using a SAS URL (see src/services/blobService.js). Azure Storage
@@ -28,18 +28,13 @@ const FRONTEND_ORIGIN = 'http://localhost:5173'
 
 async function main() {
     const blobServiceClient = BlobServiceClient.fromConnectionString(config.AZURE_STORAGE_CONNECTION_STRING)
-    const containerClient = blobServiceClient.getContainerClient(CONTAINER_NAME)
-
-    // No `access` option passed — the SDK default is a private container.
-    // Blobs inside are reachable only with a valid SAS token or an
-    // authenticated request, never a bare URL. Do not pass
-    // { access: 'blob' } or { access: 'container' } here — either would make
-    // every student's work publicly readable by anyone with the URL.
-    const { succeeded } = await containerClient.createIfNotExists()
-
-    console.log(succeeded
-        ? `Created private container "${CONTAINER_NAME}".`
-        : `Container "${CONTAINER_NAME}" already exists — nothing to do.`)
+    for (const name of CONTAINER_NAMES) {
+        // No access option: both containers remain private.
+        const { succeeded } = await blobServiceClient.getContainerClient(name).createIfNotExists()
+        console.log(succeeded
+            ? `Created private container "${name}".`
+            : `Container "${name}" already exists — nothing to do.`)
+    }
 
     // setProperties() replaces the whole properties set, not a per-field
     // patch — fine here since this account has nothing else configured

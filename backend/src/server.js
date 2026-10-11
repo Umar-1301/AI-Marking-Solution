@@ -9,6 +9,8 @@ import { inputSecurity } from './middleware/inputSecurity.js'
 import authRoutes from './routes/auth.js'
 import classRoutes from './routes/classes.js'
 import lessonRoutes from './routes/lessons.js'
+import markSchemeJobRoutes from './routes/markSchemeJobs.js'
+import { startMarkSchemeConsumer } from './services/markSchemeConsumer.js'
 import config from './config/index.js'
 import { poolConnect } from './db/index.js'
 
@@ -43,6 +45,7 @@ app.use(express.json())
 
 app.use('/auth', authRoutes)
 app.use('/classes', authenticate, inputSecurity, classRoutes)
+app.use('/lessons/mark-scheme-jobs', authenticate, markSchemeJobRoutes)
 app.use('/lessons', authenticate, lessonRoutes)
 
 app.use(errorHandler)
@@ -53,6 +56,7 @@ app.use(errorHandler)
 // the DB is unreachable so Azure restarts us.
 try {
     await poolConnect
+    startMarkSchemeConsumer()
     app.listen(config.PORT, () => {
         console.log(`Backend running on port ${config.PORT}`)
     })
