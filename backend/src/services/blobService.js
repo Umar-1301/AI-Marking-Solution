@@ -13,7 +13,7 @@ const UPLOAD_SAS_TTL_MINUTES = 10
 // usingManagedIdentity is retained because it changes more than just how the
 // client is built — see generateUploadUrl() below, where the two credential
 // types require genuinely different SAS-signing calls.
-const usingManagedIdentity = !config.AZURE_STORAGE_CONNECTION_STRING
+export const usingManagedIdentity = !config.AZURE_STORAGE_CONNECTION_STRING
 
 if (usingManagedIdentity && !config.AZURE_STORAGE_ACCOUNT_URL) {
     throw new Error(
@@ -23,7 +23,7 @@ if (usingManagedIdentity && !config.AZURE_STORAGE_ACCOUNT_URL) {
     )
 }
 
-const blobServiceClient = usingManagedIdentity
+export const blobServiceClient = usingManagedIdentity
     ? new BlobServiceClient(config.AZURE_STORAGE_ACCOUNT_URL, new DefaultAzureCredential())
     : BlobServiceClient.fromConnectionString(config.AZURE_STORAGE_CONNECTION_STRING)
 
@@ -133,5 +133,4 @@ export async function downloadStudentWork(blobName) {
 }
 // This function takes a blob name and downloads the contents of that blob to a buffer, which can then be 
 // used for further processing or returned to the client.
-
 

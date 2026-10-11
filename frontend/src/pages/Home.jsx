@@ -1,22 +1,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { getClasses, getLessons, createLesson, reuseMarkScheme } from '../services/api'
-
-const PROGRESS = {
-  security_pass:  10,
-  ai_dispatched:  10,
-  ocr_file_type:  10,
-  ocr_pages:      60,
-  done:           10,
-}
-
-const PROGRESS_LABELS = {
-  security_pass:  'Security checks passed…',
-  ai_dispatched:  'Sending to OCR model…',
-  ocr_file_type:  'Reading mark scheme…',
-  ocr_page:       'Extracting page {index} of {total}…',
-  done:           'Done',
-}
+import {
+  getClasses, getLessons, createMarkSchemeJob, queueMarkSchemeJob,
+  getMarkSchemeJob, uploadToBlob, reuseMarkScheme,
+} from '../services/api'
 
 const ChevronIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -75,6 +62,7 @@ function Home() {
   const [progress, setProgress]             = useState(0)
   const [progressLabel, setProgressLabel]   = useState('')
   const [error, setError]                   = useState(null)
+  const [activeJobId, setActiveJobId] = useState(() => sessionStorage.getItem('markSchemeJobId'))
   const fileInputRef = useRef(null)
   const navigate = useNavigate()
 
@@ -97,35 +85,52 @@ function Home() {
     setError(null)
   }
 
-  const handleProgressEvent = (event, totalPagesRef) => {
-    if (event.type === 'security_pass') {
-      setProgress(PROGRESS.security_pass)
-      setProgressLabel(PROGRESS_LABELS.security_pass)
-    } else if (event.type === 'ai_dispatched') {
-      setProgress(PROGRESS.security_pass + PROGRESS.ai_dispatched)
-      setProgressLabel(PROGRESS_LABELS.ai_dispatched)
-    } else if (event.type === 'ocr_file_type') {
-      totalPagesRef.current = event.pageCount || 1
-      setProgress(PROGRESS.security_pass + PROGRESS.ai_dispatched + PROGRESS.ocr_file_type)
-      setProgressLabel(PROGRESS_LABELS.ocr_file_type)
-    } else if (event.type === 'ocr_page') {
-      const base  = PROGRESS.security_pass + PROGRESS.ai_dispatched + PROGRESS.ocr_file_type
-      const total = totalPagesRef.current || event.totalPages || 1
-      const ratio = event.index / total
-      setProgress(Math.min(base + PROGRESS.ocr_pages * ratio, 90))
-      setProgressLabel(
-        PROGRESS_LABELS.ocr_page.replace('{index}', event.index).replace('{total}', total)
-      )
-    } else if (event.type === 'done') {
-      setProgress(100)
-      setProgressLabel(PROGRESS_LABELS.done)
+  useEffect(() => {
+    if (!activeJobId) return
+    let cancelled = false
+    let timerId
+    setLoading(true)
+
+    const poll = async () => {
+      try {
+        const job = await getMarkSchemeJob(activeJobId)
+        if (cancelled) return
+        if (job.status === 'complete') {
+          sessionStorage.removeItem('markSchemeJobId')
+          setActiveJobId(null)
+          setProgress(100)
+          if (job.hasMultipleQuestions) navigate(`/select-question/${job.lessonId}`)
+          else navigate(`/student-marking/${job.lessonId}`)
+          return
+        }
+        if (job.status === 'failed') {
+          sessionStorage.removeItem('markSchemeJobId')
+          setActiveJobId(null)
+          setLoading(false)
+          setError(job.error || 'Mark scheme processing failed')
+          return
+        }
+        setProgress(job.status === 'ocr' ? 70 : job.status === 'processing' ? 45 : 25)
+        setProgressLabel(
+          job.status === 'ocr' ? 'Reading mark scheme…'
+            : job.status === 'processing' ? 'Processing mark scheme…'
+              : 'Queued for processing…'
+        )
+      } catch {
+        if (cancelled) return
+        // Keep the last known state and retry a transient status failure.
+      }
+      timerId = window.setTimeout(poll, 2000)
     }
-  }
+
+    poll()
+    return () => { cancelled = true; window.clearTimeout(timerId) }
+  }, [activeJobId, navigate])
 
   const handleBeginMarking = async () => {
+    if (loading || activeJobId) return
     if (!selectedClassId)                   return setError('Please select a class before continuing.')
     if (!markScheme && !selectedLesson)     return setError('Please upload a mark scheme or select a previous one.')
-
     if (selectedLesson) {
       setLoading(true)
       setError(null)
@@ -147,21 +152,18 @@ function Home() {
     setLoading(true)
     setError(null)
     setProgress(0)
-    setProgressLabel('Running security checks…')
+    setProgressLabel('Preparing mark scheme upload…')
 
-    const totalPagesRef = { current: 1 }
     try {
-      const result = await createLesson(
-        selectedClassId,
-        markScheme,
-        (event) => handleProgressEvent(event, totalPagesRef)
-      )
-
-      if (result.has_multiple_questions) {
-        navigate(`/select-question/${result.id}`)
-      } else {
-        navigate(`/student-marking/${result.id}`)
-      }
+      const { jobId, uploadUrl } = await createMarkSchemeJob(selectedClassId, markScheme)
+      setProgress(10)
+      setProgressLabel('Uploading mark scheme…')
+      await uploadToBlob(uploadUrl, markScheme)
+      setProgress(20)
+      setProgressLabel('Queueing mark scheme…')
+      await queueMarkSchemeJob(jobId)
+      sessionStorage.setItem('markSchemeJobId', jobId)
+      setActiveJobId(jobId)
     } catch (err) {
       setError(err.message)
       setLoading(false)

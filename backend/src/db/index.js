@@ -235,9 +235,10 @@ export const lessonDb = {
         mimeType,
         ocrText,
         structuredScheme,
-        threadExtraction
-    ) =>
-        inTransaction(async (transaction) => {
+        threadExtraction,
+        executor = null
+    ) => {
+        const work = async (transaction) => {
             const lesson = (await exec(transaction, `
                 INSERT INTO dbo.lessons (
                     lesson_title,
@@ -303,7 +304,9 @@ export const lessonDb = {
             ])
 
             return lesson.id
-        }),
+        }
+        return executor ? work(executor) : inTransaction(work)
+    },
 }
 
 // Least-privilege application accessor for a student's marked work.
@@ -508,6 +511,136 @@ export const markingJobDb = {
             intParam('lessonId', lessonId),
             intParam('teacherId', teacherId),
         ])).recordset,
+}
+
+export const markSchemeJobDb = {
+    createPending: async (teacherId, classId, fileName, mimeType) =>
+        (await exec(pool, `
+            INSERT INTO dbo.mark_scheme_jobs (teacher_id, class_id, file_name, mime_type)
+            OUTPUT CONVERT(NVARCHAR(36), INSERTED.job_id) AS job_id
+            SELECT @teacherId, c.id, @fileName, @mimeType
+            FROM dbo.classes AS c
+            WHERE c.id = @classId AND c.teacher_id = @teacherId
+        `, [
+            intParam('teacherId', teacherId),
+            intParam('classId', classId),
+            textParam('fileName', 255, fileName),
+            textParam('mimeType', 100, mimeType),
+        ])).recordset[0],
+
+    setBlobName: async (jobId, teacherId, blobName) =>
+        exec(pool, `
+            UPDATE dbo.mark_scheme_jobs SET blob_name = @blobName, updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND teacher_id = @teacherId AND status = N'awaiting_upload'
+        `, [
+            uuidParam('jobId', jobId), intParam('teacherId', teacherId),
+            textParam('blobName', 512, blobName),
+        ]),
+
+    findOwned: async (jobId, teacherId) =>
+        (await exec(pool, `
+            SELECT CONVERT(NVARCHAR(36), j.job_id) AS job_id, j.teacher_id, j.class_id,
+                   j.blob_name, j.blob_etag, j.file_name, j.mime_type, j.status,
+                   j.lesson_id, j.has_multiple_questions, j.error_message,
+                   j.created_at, j.queued_at, j.processing_at, j.ocr_at, j.completed_at
+            FROM dbo.mark_scheme_jobs AS j
+            JOIN dbo.classes AS c ON c.id = j.class_id
+            WHERE j.job_id = @jobId AND j.teacher_id = @teacherId
+              AND c.teacher_id = @teacherId
+        `, [uuidParam('jobId', jobId), intParam('teacherId', teacherId)])).recordset[0],
+
+    markQueued: async (jobId, teacherId, etag) =>
+        (await exec(pool, `
+            UPDATE dbo.mark_scheme_jobs
+            SET status = N'queued', blob_etag = @etag,
+                queued_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND teacher_id = @teacherId
+              AND status = N'awaiting_upload' AND blob_name IS NOT NULL
+        `, [
+            uuidParam('jobId', jobId), intParam('teacherId', teacherId),
+            textParam('etag', 128, etag),
+        ])).rowsAffected[0] === 1,
+
+    restorePending: async (jobId, teacherId) =>
+        exec(pool, `
+            UPDATE dbo.mark_scheme_jobs
+            SET status = N'awaiting_upload', blob_etag = NULL,
+                queued_at = NULL, updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND teacher_id = @teacherId AND status = N'queued'
+        `, [uuidParam('jobId', jobId), intParam('teacherId', teacherId)]),
+
+    claimProcessing: async (jobId) =>
+        (await exec(pool, `
+            UPDATE dbo.mark_scheme_jobs
+            SET status = N'processing', processing_at = SYSUTCDATETIME(),
+                updated_at = SYSUTCDATETIME()
+            OUTPUT INSERTED.teacher_id, INSERTED.class_id, INSERTED.blob_name,
+                   INSERTED.blob_etag, INSERTED.file_name, INSERTED.mime_type
+            WHERE job_id = @jobId AND status IN (N'queued', N'processing', N'ocr')
+        `, [uuidParam('jobId', jobId)])).recordset[0],
+
+    markOcr: async (jobId) =>
+        exec(pool, `
+            UPDATE dbo.mark_scheme_jobs
+            SET status = N'ocr', ocr_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND status = N'processing'
+        `, [uuidParam('jobId', jobId)]),
+
+    retry: async (jobId, message) =>
+        exec(pool, `
+            UPDATE dbo.mark_scheme_jobs
+            SET status = N'queued', error_message = @message, updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND status IN (N'processing', N'ocr')
+        `, [uuidParam('jobId', jobId), textParam('message', 500, message)]),
+
+    fail: async (jobId, message) =>
+        exec(pool, `
+            UPDATE dbo.mark_scheme_jobs
+            SET status = N'failed', error_message = @message, updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND status IN (N'processing', N'ocr', N'queued')
+        `, [uuidParam('jobId', jobId), textParam('message', 500, message)]),
+
+    completeWithLesson: async (jobId, job, file, ocrResult) =>
+        inTransaction(async (transaction) => {
+            const current = (await exec(transaction, `
+                SELECT status, lesson_id FROM dbo.mark_scheme_jobs WITH (UPDLOCK, HOLDLOCK)
+                WHERE job_id = @jobId AND teacher_id = @teacherId
+            `, [uuidParam('jobId', jobId), intParam('teacherId', job.teacher_id)])).recordset[0]
+
+            if (!current) throw new Error('Mark scheme job not found')
+            if (current.status === 'complete') return current.lesson_id
+            if (current.status !== 'ocr') throw new Error('Mark scheme job is not processing')
+
+            const lessonId = await lessonDb.createLesson(
+                file.originalname.replace(/\.[^.]+$/, ''),
+                job.class_id,
+                file.originalname,
+                file.mimetype,
+                ocrResult.text,
+                ocrResult.structured_scheme,
+                ocrResult.thread_scheme,
+                transaction
+            )
+            const hasMultiple = (() => {
+                try {
+                    const parsed = JSON.parse(ocrResult.structured_scheme || '{}')
+                    return parsed.paper_type === 'multi' && (parsed.questions ?? []).length > 1
+                } catch { return false }
+            })()
+
+            await exec(transaction, `
+                UPDATE dbo.mark_scheme_jobs
+                SET status = N'complete', lesson_id = @lessonId,
+                    has_multiple_questions = @hasMultiple, error_message = NULL,
+                    completed_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+                WHERE job_id = @jobId AND teacher_id = @teacherId
+            `, [
+                uuidParam('jobId', jobId), intParam('teacherId', job.teacher_id),
+                intParam('lessonId', lessonId),
+                { name: 'hasMultiple', type: sql.Bit, value: hasMultiple },
+            ])
+            return lessonId
+        }),
 }
 
 // Every class/student method keeps the same optional executor signature so the

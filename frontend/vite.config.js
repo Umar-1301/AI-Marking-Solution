@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import process from 'node:process'
 
 export default defineConfig(({ mode }) => {
     // Frontend and backend are served from the same origin (gateway routes
@@ -25,21 +26,16 @@ export default defineConfig(({ mode }) => {
         "form-action 'self'",
     ].join('; ')
 
-    // Production CSP: the built output has no inline scripts or styles — Vite extracts
-    // everything into hashed asset files served from 'self'. 'unsafe-inline' is dropped.
-    //
-    // KNOWN GAP: connect-src here still needs the real Storage account's exact
-    // hostname (https://<account>.blob.core.windows.net) added, same as devCSP's
-    // Azurite entry, once that account exists — direct-to-blob upload will be
-    // silently CSP-blocked in production until then. Not filled in yet because
-    // there's no real hostname to put here.
+    // Production preview uses the exact browser-visible Storage origin. nginx
+    // substitutes BLOB_ORIGIN at runtime for deployed builds.
+    const blobOrigin = process.env.BLOB_ORIGIN || 'http://127.0.0.1:10000'
     const prodCSP = [
         "default-src 'none'",
         "script-src 'self'",
         "style-src 'self' https://fonts.googleapis.com",
         "font-src 'self' https://fonts.gstatic.com",
         "img-src 'self' data:",
-        "connect-src 'self'",
+        `connect-src 'self' ${blobOrigin}`,
         "base-uri 'self'",
         "form-action 'self'",
     ].join('; ')

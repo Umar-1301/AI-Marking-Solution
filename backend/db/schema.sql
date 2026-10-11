@@ -185,6 +185,57 @@ END;
 GO
 
 /* ---- Asynchronous marking jobs ------------------------------------------ */
+-- One job per new mark scheme. The lesson is created only after OCR succeeds,
+-- so class_id and teacher_id identify the upload until lesson_id is available.
+IF OBJECT_ID(N'dbo.mark_scheme_jobs', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.mark_scheme_jobs (
+        job_id        UNIQUEIDENTIFIER NOT NULL
+            CONSTRAINT DF_mark_scheme_jobs_job_id DEFAULT (NEWID()),
+        teacher_id    INT              NOT NULL REFERENCES dbo.teachers(id),
+        class_id      INT              NOT NULL REFERENCES dbo.classes(id),
+        blob_name     NVARCHAR(512)    NULL,
+        blob_etag     NVARCHAR(128)    NULL,
+        file_name     NVARCHAR(255)    NOT NULL,
+        mime_type     NVARCHAR(100)    NOT NULL,
+        lesson_id     INT              NULL REFERENCES dbo.lessons(id),
+        status        NVARCHAR(20)     NOT NULL
+            CONSTRAINT DF_mark_scheme_jobs_status DEFAULT N'awaiting_upload',
+        has_multiple_questions BIT     NULL,
+        error_message NVARCHAR(500)   NULL,
+        created_at    DATETIME2(3)     NOT NULL
+            CONSTRAINT DF_mark_scheme_jobs_created_at DEFAULT (SYSUTCDATETIME()),
+        queued_at     DATETIME2(3)     NULL,
+        processing_at DATETIME2(3)     NULL,
+        ocr_at        DATETIME2(3)     NULL,
+        completed_at  DATETIME2(3)     NULL,
+        updated_at    DATETIME2(3)     NOT NULL
+            CONSTRAINT DF_mark_scheme_jobs_updated_at DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT PK_mark_scheme_jobs PRIMARY KEY (job_id),
+        CONSTRAINT CK_mark_scheme_jobs_status CHECK (
+            status IN (N'awaiting_upload', N'queued', N'processing', N'ocr', N'complete', N'failed')
+        )
+    );
+END;
+GO
+
+IF COL_LENGTH('dbo.mark_scheme_jobs', 'ocr_at') IS NULL
+BEGIN
+    ALTER TABLE dbo.mark_scheme_jobs ADD ocr_at DATETIME2(3) NULL;
+END;
+GO
+
+-- The table may have been created by an earlier local version of this flow.
+-- Reapply the status constraint to include the OCR phase.
+IF EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_mark_scheme_jobs_status')
+BEGIN
+    ALTER TABLE dbo.mark_scheme_jobs DROP CONSTRAINT CK_mark_scheme_jobs_status;
+END;
+ALTER TABLE dbo.mark_scheme_jobs ADD CONSTRAINT CK_mark_scheme_jobs_status CHECK (
+    status IN (N'awaiting_upload', N'queued', N'processing', N'ocr', N'complete', N'failed')
+);
+GO
+
 -- One row represents one attempt to mark one student's work. Service Bus
 -- delivers the work, while this table is the durable application-level source
 -- of truth used by the worker and the authenticated frontend status route.
