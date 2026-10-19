@@ -4,6 +4,7 @@ import {
     generateMarkSchemeUploadUrl, getMarkSchemeProperties, markSchemeBlobName,
 } from '../services/markSchemeBlobService.js'
 import { sendMarkSchemeRequest } from '../services/queueService.js'
+import { testFlowId, traceMarkScheme } from '../logging/markSchemeTrace.js'
 
 const router = express.Router()
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -22,6 +23,7 @@ router.post('/', async (req, res, next) => {
         if (!cls) return res.status(404).json({ error: 'Class not found' })
 
         const job = await markSchemeJobDb.createPending(req.user.id, classId, fileName, mimeType)
+        req.markSchemeJobId = job.job_id
         const blobName = markSchemeBlobName(req.user.id, job.job_id)
         await markSchemeJobDb.setBlobName(job.job_id, req.user.id, blobName)
         const uploadUrl = await generateMarkSchemeUploadUrl(blobName)
@@ -54,6 +56,7 @@ router.post('/:jobId/queue', async (req, res, next) => {
         if (!queued) return res.status(409).json({ error: 'Job was already queued' })
         try {
             await sendMarkSchemeRequest(jobId)
+            traceMarkScheme('queued', { flow_id: testFlowId(req), job_id: jobId })
         } catch (err) {
             await markSchemeJobDb.restorePending(jobId, req.user.id)
             throw err

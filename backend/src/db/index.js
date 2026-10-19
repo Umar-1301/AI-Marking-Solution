@@ -1,5 +1,16 @@
 import sql from 'mssql'
 import config from '../config/index.js'
+import {
+    MARK_SCHEME_LEASE_SECONDS,
+    MARK_SCHEME_MAX_CONCURRENT,
+    MARK_SCHEME_OCR_STARTS_PER_MINUTE,
+    MARK_SCHEME_MAX_ATTEMPTS,
+    MARK_SCHEME_RECOVERY_RESEND_SECONDS,
+} from '../config/markSchemeProcessing.js'
+import {
+    STUDENT_MARKING_MAX_ATTEMPTS,
+    STUDENT_MARKING_RECOVERY_RESEND_SECONDS,
+} from '../config/studentMarkingProcessing.js'
 
 // Azure SQL connection pool. Authentication uses Entra ID through
 // DefaultAzureCredential by default: the Container App's managed identity in
@@ -236,8 +247,10 @@ export const lessonDb = {
         ocrText,
         structuredScheme,
         threadExtraction,
-        executor = null
+        executor = null,
+        { jobId = null, attemptId = null } = {}
     ) => {
+        const jobContext = jobId ? `job=${jobId}, attempt=${attemptId ?? '-'}, ` : ''
         const work = async (transaction) => {
             const lesson = (await exec(transaction, `
                 INSERT INTO dbo.lessons (
@@ -277,7 +290,7 @@ export const lessonDb = {
             ])).recordset[0]
 
             console.log(
-                `[THREAD EXTRACTION][BACKEND] 4/5 Inserting thread extraction into teacher_ocr — ocr_id=${ocr.id}, characters=${(threadExtraction ?? '').length}`
+                `[THREAD EXTRACTION][BACKEND] 4/5 Inserting thread extraction into teacher_ocr — ${jobContext}ocr_id=${ocr.id}, characters=${(threadExtraction ?? '').length}`
             )
 
             const storedThreadExtraction = (await exec(transaction, `
@@ -291,7 +304,7 @@ export const lessonDb = {
             ])).recordset[0]
 
             console.log(
-                `[THREAD EXTRACTION][BACKEND] 5/5 SQL readback confirmed — ocr_id=${ocr.id}, stored_bytes=${storedThreadExtraction?.thread_extraction_bytes ?? 0}`
+                `[THREAD EXTRACTION][BACKEND] 5/5 SQL readback confirmed — ${jobContext}ocr_id=${ocr.id}, stored_bytes=${storedThreadExtraction?.thread_extraction_bytes ?? 0}`
             )
 
             await exec(transaction, `
@@ -458,14 +471,25 @@ export const markingDb = {
 export const markingJobDb = {
     createQueued: async (teacherId, lessonId, studentId, e = pool) =>
         (await exec(e, `
-            INSERT INTO dbo.marking_jobs (teacher_id, lesson_id, student_id, status)
+            INSERT INTO dbo.marking_jobs
+                (teacher_id, lesson_id, student_id, status, recovery_due_at)
             OUTPUT CONVERT(NVARCHAR(36), INSERTED.job_id) AS job_id
-            VALUES (@teacherId, @lessonId, @studentId, N'queued')
+            VALUES (@teacherId, @lessonId, @studentId, N'queued',
+                    DATEADD(SECOND, 60, SYSUTCDATETIME()))
         `, [
             intParam('teacherId', teacherId),
             intParam('lessonId', lessonId),
             intParam('studentId', studentId),
         ])).recordset[0],
+
+    markPublished: async (jobId, attemptCount = 0) =>
+        exec(pool, `
+            UPDATE dbo.marking_jobs
+            SET recovery_due_at = NULL, recovery_enqueued_at = NULL,
+                updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND status = N'queued'
+              AND attempt_count = @attemptCount
+        `, [uuidParam('jobId', jobId), intParam('attemptCount', attemptCount)]),
 
     // If queue publication fails, remove the not-yet-published row so SQL
     // does not claim that work is queued when Service Bus never accepted it.
@@ -482,6 +506,8 @@ export const markingJobDb = {
                     mj.job_id,
                     mj.student_id,
                     mj.status,
+                    mj.attempt_count,
+                    mj.error_message,
                     mj.queued_at,
                     mj.processing_at,
                     mj.marking_at,
@@ -501,6 +527,8 @@ export const markingJobDb = {
                 CONVERT(NVARCHAR(36), job_id) AS job_id,
                 student_id,
                 status,
+                attempt_count,
+                error_message,
                 queued_at,
                 processing_at,
                 marking_at,
@@ -511,6 +539,45 @@ export const markingJobDb = {
             intParam('lessonId', lessonId),
             intParam('teacherId', teacherId),
         ])).recordset,
+
+    recoverExpiredAttempts: async () =>
+        exec(pool, `
+            UPDATE dbo.marking_jobs
+            SET status = CASE WHEN attempt_count >= @maxAttempts THEN N'failed' ELSE N'queued' END,
+                owner_id = NULL, attempt_id = NULL, lease_expires_at = NULL,
+                recovery_due_at = CASE WHEN attempt_count >= @maxAttempts
+                    THEN NULL ELSE SYSUTCDATETIME() END,
+                recovery_enqueued_at = NULL,
+                error_message = N'Previous student marking attempt stopped responding',
+                updated_at = SYSUTCDATETIME()
+            WHERE status IN (N'processing', N'marking')
+              AND (lease_expires_at <= SYSUTCDATETIME()
+                   OR attempt_deadline_at <= SYSUTCDATETIME())
+        `, [intParam('maxAttempts', STUDENT_MARKING_MAX_ATTEMPTS)]),
+
+    failExhaustedQueued: async () =>
+        exec(pool, `
+            UPDATE dbo.marking_jobs
+            SET status = N'failed', recovery_due_at = NULL,
+                error_message = N'Student marking failed after maximum attempts',
+                updated_at = SYSUTCDATETIME()
+            WHERE status = N'queued' AND attempt_count >= @maxAttempts
+        `, [intParam('maxAttempts', STUDENT_MARKING_MAX_ATTEMPTS)]),
+
+    reserveRecoveryJobs: async () =>
+        (await exec(pool, `
+            UPDATE TOP (25) dbo.marking_jobs
+            SET recovery_enqueued_at = SYSUTCDATETIME(),
+                updated_at = SYSUTCDATETIME()
+            OUTPUT CONVERT(NVARCHAR(36), INSERTED.job_id) AS job_id,
+                   INSERTED.teacher_id, INSERTED.lesson_id, INSERTED.student_id,
+                   INSERTED.attempt_count
+            WHERE status = N'queued' AND recovery_due_at <= SYSUTCDATETIME()
+              AND attempt_count < @maxAttempts
+              AND (recovery_enqueued_at IS NULL OR recovery_enqueued_at <=
+                   DATEADD(SECOND, -@resendSeconds, SYSUTCDATETIME()))
+        `, [intParam('maxAttempts', STUDENT_MARKING_MAX_ATTEMPTS),
+            intParam('resendSeconds', STUDENT_MARKING_RECOVERY_RESEND_SECONDS)])).recordset,
 }
 
 export const markSchemeJobDb = {
@@ -553,63 +620,219 @@ export const markSchemeJobDb = {
         (await exec(pool, `
             UPDATE dbo.mark_scheme_jobs
             SET status = N'queued', blob_etag = @etag,
-                queued_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+                queued_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME(),
+                recovery_due_at = DATEADD(SECOND, @resendSeconds, SYSUTCDATETIME()),
+                recovery_enqueued_at = NULL
             WHERE job_id = @jobId AND teacher_id = @teacherId
               AND status = N'awaiting_upload' AND blob_name IS NOT NULL
         `, [
             uuidParam('jobId', jobId), intParam('teacherId', teacherId),
             textParam('etag', 128, etag),
+            intParam('resendSeconds', MARK_SCHEME_RECOVERY_RESEND_SECONDS),
         ])).rowsAffected[0] === 1,
 
     restorePending: async (jobId, teacherId) =>
         exec(pool, `
             UPDATE dbo.mark_scheme_jobs
             SET status = N'awaiting_upload', blob_etag = NULL,
-                queued_at = NULL, updated_at = SYSUTCDATETIME()
+                queued_at = NULL, recovery_due_at = NULL,
+                recovery_enqueued_at = NULL, updated_at = SYSUTCDATETIME()
             WHERE job_id = @jobId AND teacher_id = @teacherId AND status = N'queued'
         `, [uuidParam('jobId', jobId), intParam('teacherId', teacherId)]),
 
-    claimProcessing: async (jobId) =>
-        (await exec(pool, `
+    claimProcessing: async (jobId, ownerId, attemptId) =>
+        inTransaction(async (transaction) => {
+            // Serialize slot allocation across all backend replicas. A SQL
+            // transaction lock prevents two replicas from both claiming the
+            // same remaining slot.
+            const allocationLock = (await exec(transaction, `
+                DECLARE @result INT;
+                EXEC @result = sys.sp_getapplock
+                    @Resource = N'mark-scheme-processing-slots',
+                    @LockMode = N'Exclusive',
+                    @LockOwner = N'Transaction',
+                    @LockTimeout = 10000;
+                SELECT @result AS result;
+            `)).recordset[0]?.result
+            if (typeof allocationLock !== 'number' || allocationLock < 0) {
+                throw new Error('Could not reserve mark scheme processing slot')
+            }
+
+            const active = (await exec(transaction, `
+                SELECT COUNT(*) AS total FROM dbo.mark_scheme_jobs
+                WHERE status IN (N'processing', N'ocr')
+                  AND lease_expires_at > SYSUTCDATETIME()
+            `)).recordset[0].total
+            if (active >= MARK_SCHEME_MAX_CONCURRENT) return undefined
+
+            return (await exec(transaction, `
             UPDATE dbo.mark_scheme_jobs
-            SET status = N'processing', processing_at = SYSUTCDATETIME(),
-                updated_at = SYSUTCDATETIME()
+            SET status = N'processing', owner_id = @ownerId, attempt_id = @attemptId,
+                attempt_count = attempt_count + 1,
+                processing_at = SYSUTCDATETIME(), ocr_at = NULL,
+                heartbeat_at = SYSUTCDATETIME(),
+                lease_expires_at = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
+                attempt_deadline_at = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
+                recovery_due_at = NULL, recovery_enqueued_at = NULL,
+                error_message = NULL, updated_at = SYSUTCDATETIME()
             OUTPUT INSERTED.teacher_id, INSERTED.class_id, INSERTED.blob_name,
-                   INSERTED.blob_etag, INSERTED.file_name, INSERTED.mime_type
-            WHERE job_id = @jobId AND status IN (N'queued', N'processing', N'ocr')
+                   INSERTED.blob_etag, INSERTED.file_name, INSERTED.mime_type,
+                   INSERTED.attempt_count, INSERTED.attempt_deadline_at
+            WHERE job_id = @jobId AND status = N'queued'
+              AND attempt_count < @maxAttempts
+            `, [
+                uuidParam('jobId', jobId),
+                textParam('ownerId', 128, ownerId),
+                uuidParam('attemptId', attemptId),
+                intParam('leaseSeconds', MARK_SCHEME_LEASE_SECONDS),
+                intParam('maxAttempts', MARK_SCHEME_MAX_ATTEMPTS),
+            ])).recordset[0]
+        }),
+
+    getProcessingState: async (jobId) =>
+        (await exec(pool, `
+            SELECT status, attempt_count, lease_expires_at
+            FROM dbo.mark_scheme_jobs WHERE job_id = @jobId
         `, [uuidParam('jobId', jobId)])).recordset[0],
 
-    markOcr: async (jobId) =>
+    heartbeat: async (jobId, attemptId) =>
+        (await exec(pool, `
+            UPDATE dbo.mark_scheme_jobs
+            SET heartbeat_at = SYSUTCDATETIME(),
+                lease_expires_at = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
+                updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND attempt_id = @attemptId
+              AND status IN (N'processing', N'ocr')
+              AND lease_expires_at > SYSUTCDATETIME()
+              AND attempt_deadline_at > SYSUTCDATETIME()
+        `, [
+            uuidParam('jobId', jobId), uuidParam('attemptId', attemptId),
+            intParam('leaseSeconds', MARK_SCHEME_LEASE_SECONDS),
+        ])).rowsAffected[0] === 1,
+
+    markOcr: async (jobId, attemptId) =>
+        inTransaction(async (transaction) => {
+            // Reserve the provider quota immediately before the OCR request,
+            // after Blob download. This is a global rolling-minute gate.
+            const allocationLock = (await exec(transaction, `
+                DECLARE @result INT;
+                EXEC @result = sys.sp_getapplock
+                    @Resource = N'mark-scheme-processing-slots',
+                    @LockMode = N'Exclusive',
+                    @LockOwner = N'Transaction',
+                    @LockTimeout = 10000;
+                SELECT @result AS result;
+            `)).recordset[0]?.result
+            if (typeof allocationLock !== 'number' || allocationLock < 0) {
+                throw new Error('Could not reserve mark scheme OCR allowance')
+            }
+            const owned = (await exec(transaction, `
+                SELECT 1 AS owned FROM dbo.mark_scheme_jobs
+                WHERE job_id = @jobId AND attempt_id = @attemptId
+                  AND status = N'processing'
+                  AND lease_expires_at > SYSUTCDATETIME()
+                  AND attempt_deadline_at > SYSUTCDATETIME()
+            `, [uuidParam('jobId', jobId), uuidParam('attemptId', attemptId)])).recordset[0]
+            if (!owned) return false
+
+            await exec(transaction, `
+                DELETE FROM dbo.mark_scheme_ocr_admissions
+                WHERE started_at <= DATEADD(DAY, -1, SYSUTCDATETIME())
+            `)
+            const recentStarts = (await exec(transaction, `
+                SELECT COUNT(*) AS total FROM dbo.mark_scheme_ocr_admissions
+                WHERE started_at > DATEADD(SECOND, -60, SYSUTCDATETIME())
+            `)).recordset[0].total
+            if (recentStarts >= MARK_SCHEME_OCR_STARTS_PER_MINUTE) return 'rate_limited'
+
+            const admitted = (await exec(transaction, `
+                UPDATE dbo.mark_scheme_jobs
+                SET status = N'ocr', ocr_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+                WHERE job_id = @jobId AND attempt_id = @attemptId
+                  AND status = N'processing'
+                  AND lease_expires_at > SYSUTCDATETIME()
+                  AND attempt_deadline_at > SYSUTCDATETIME()
+            `, [uuidParam('jobId', jobId), uuidParam('attemptId', attemptId)])).rowsAffected[0] === 1
+            if (!admitted) return false
+            await exec(transaction, `
+                INSERT INTO dbo.mark_scheme_ocr_admissions (attempt_id)
+                VALUES (@attemptId)
+            `, [uuidParam('attemptId', attemptId)])
+            return true
+        }),
+
+    finishAttemptWithError: async (jobId, attemptId, message) =>
+        (await exec(pool, `
+            UPDATE dbo.mark_scheme_jobs
+            SET status = CASE WHEN attempt_count >= @maxAttempts THEN N'failed' ELSE N'queued' END,
+                owner_id = NULL, attempt_id = NULL, lease_expires_at = NULL,
+                recovery_due_at = CASE WHEN attempt_count >= @maxAttempts
+                    THEN NULL ELSE SYSUTCDATETIME() END,
+                recovery_enqueued_at = NULL,
+                error_message = @message, updated_at = SYSUTCDATETIME()
+            OUTPUT INSERTED.status
+            WHERE job_id = @jobId AND attempt_id = @attemptId
+              AND status IN (N'processing', N'ocr')
+        `, [
+            uuidParam('jobId', jobId), uuidParam('attemptId', attemptId),
+            textParam('message', 500, message),
+            intParam('maxAttempts', MARK_SCHEME_MAX_ATTEMPTS),
+        ])).recordset[0]?.status,
+
+    recoverExpiredAttempts: async () =>
         exec(pool, `
             UPDATE dbo.mark_scheme_jobs
-            SET status = N'ocr', ocr_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
-            WHERE job_id = @jobId AND status = N'processing'
-        `, [uuidParam('jobId', jobId)]),
+            SET status = CASE WHEN attempt_count >= @maxAttempts THEN N'failed' ELSE N'queued' END,
+                owner_id = NULL, attempt_id = NULL, lease_expires_at = NULL,
+                recovery_due_at = CASE WHEN attempt_count >= @maxAttempts
+                    THEN NULL ELSE SYSUTCDATETIME() END,
+                recovery_enqueued_at = NULL,
+                error_message = N'Previous mark scheme attempt stopped responding',
+                updated_at = SYSUTCDATETIME()
+            WHERE status IN (N'processing', N'ocr')
+              AND lease_expires_at <= SYSUTCDATETIME()
+        `, [intParam('maxAttempts', MARK_SCHEME_MAX_ATTEMPTS)]),
 
-    retry: async (jobId, message) =>
+    failExhaustedQueued: async () =>
         exec(pool, `
             UPDATE dbo.mark_scheme_jobs
-            SET status = N'queued', error_message = @message, updated_at = SYSUTCDATETIME()
-            WHERE job_id = @jobId AND status IN (N'processing', N'ocr')
-        `, [uuidParam('jobId', jobId), textParam('message', 500, message)]),
+            SET status = N'failed', recovery_due_at = NULL,
+                error_message = N'Mark scheme processing failed after maximum attempts',
+                updated_at = SYSUTCDATETIME()
+            WHERE status = N'queued' AND attempt_count >= @maxAttempts
+        `, [intParam('maxAttempts', MARK_SCHEME_MAX_ATTEMPTS)]),
 
-    fail: async (jobId, message) =>
-        exec(pool, `
-            UPDATE dbo.mark_scheme_jobs
-            SET status = N'failed', error_message = @message, updated_at = SYSUTCDATETIME()
-            WHERE job_id = @jobId AND status IN (N'processing', N'ocr', N'queued')
-        `, [uuidParam('jobId', jobId), textParam('message', 500, message)]),
+    reserveRecoveryJobs: async () =>
+        (await exec(pool, `
+            UPDATE TOP (25) dbo.mark_scheme_jobs
+            SET recovery_enqueued_at = SYSUTCDATETIME(),
+                updated_at = SYSUTCDATETIME()
+            OUTPUT CONVERT(NVARCHAR(36), INSERTED.job_id) AS job_id
+            WHERE status = N'queued' AND recovery_due_at <= SYSUTCDATETIME()
+              AND (recovery_enqueued_at IS NULL OR recovery_enqueued_at <=
+                   DATEADD(SECOND, -@resendSeconds, SYSUTCDATETIME()))
+        `, [
+            intParam('resendSeconds', MARK_SCHEME_RECOVERY_RESEND_SECONDS),
+        ])).recordset,
 
-    completeWithLesson: async (jobId, job, file, ocrResult) =>
+    completeWithLesson: async (jobId, attemptId, job, file, ocrResult) =>
         inTransaction(async (transaction) => {
             const current = (await exec(transaction, `
-                SELECT status, lesson_id FROM dbo.mark_scheme_jobs WITH (UPDLOCK, HOLDLOCK)
+                SELECT status, lesson_id, attempt_id,
+                    CASE WHEN attempt_deadline_at > SYSUTCDATETIME()
+                          AND lease_expires_at > SYSUTCDATETIME()
+                        THEN CAST(1 AS BIT) ELSE CAST(0 AS BIT) END AS before_deadline
+                FROM dbo.mark_scheme_jobs WITH (UPDLOCK, HOLDLOCK)
                 WHERE job_id = @jobId AND teacher_id = @teacherId
             `, [uuidParam('jobId', jobId), intParam('teacherId', job.teacher_id)])).recordset[0]
 
             if (!current) throw new Error('Mark scheme job not found')
             if (current.status === 'complete') return current.lesson_id
-            if (current.status !== 'ocr') throw new Error('Mark scheme job is not processing')
+            if (current.status !== 'ocr' ||
+                String(current.attempt_id).toLowerCase() !== attemptId.toLowerCase() ||
+                !current.before_deadline) {
+                throw new Error('Mark scheme attempt no longer owns job')
+            }
 
             const lessonId = await lessonDb.createLesson(
                 file.originalname.replace(/\.[^.]+$/, ''),
@@ -619,7 +842,8 @@ export const markSchemeJobDb = {
                 ocrResult.text,
                 ocrResult.structured_scheme,
                 ocrResult.thread_scheme,
-                transaction
+                transaction,
+                { jobId, attemptId }
             )
             const hasMultiple = (() => {
                 try {
@@ -628,17 +852,26 @@ export const markSchemeJobDb = {
                 } catch { return false }
             })()
 
-            await exec(transaction, `
+            const completion = await exec(transaction, `
                 UPDATE dbo.mark_scheme_jobs
                 SET status = N'complete', lesson_id = @lessonId,
                     has_multiple_questions = @hasMultiple, error_message = NULL,
-                    completed_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME()
+                    completed_at = SYSUTCDATETIME(), updated_at = SYSUTCDATETIME(),
+                    lease_expires_at = NULL, recovery_due_at = NULL,
+                    recovery_enqueued_at = NULL
                 WHERE job_id = @jobId AND teacher_id = @teacherId
+                  AND attempt_id = @attemptId AND status = N'ocr'
+                  AND lease_expires_at > SYSUTCDATETIME()
+                  AND attempt_deadline_at > SYSUTCDATETIME()
             `, [
                 uuidParam('jobId', jobId), intParam('teacherId', job.teacher_id),
+                uuidParam('attemptId', attemptId),
                 intParam('lessonId', lessonId),
                 { name: 'hasMultiple', type: sql.Bit, value: hasMultiple },
             ])
+            if (completion.rowsAffected[0] !== 1) {
+                throw new Error('Mark scheme attempt timed out before completion')
+            }
             return lessonId
         }),
 }

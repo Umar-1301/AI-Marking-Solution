@@ -1,4 +1,10 @@
 import sql from 'mssql'
+import {
+    MARKING_LEASE_SECONDS,
+    MARKING_MAX_ATTEMPTS,
+    MARKING_MAX_CONCURRENT,
+    MARKING_RECOVERY_RESEND_SECONDS,
+} from '../config/markingProcessing.js'
 
 function requireEnvironmentVariable(name) {
     const value = process.env[name]?.trim()
@@ -133,70 +139,119 @@ export const lessonDb = {
 // lifecycle transitions after queueing; SQL remains the durable source of
 // truth read by the backend's status endpoint.
 export const markingJobDb = {
-    markProcessing: async (jobId, teacherId, lessonId, studentId, executor = pool) => {
-        const updated = (await exec(executor, `
+    claimProcessing: async (jobId, ownerId, attemptId, teacherId, lessonId, studentId) =>
+        inTransaction(async transaction => {
+            const lock = (await exec(transaction, `
+                DECLARE @result INT;
+                EXEC @result = sys.sp_getapplock
+                    @Resource = N'student-marking-processing-slots',
+                    @LockMode = N'Exclusive', @LockOwner = N'Transaction',
+                    @LockTimeout = 10000;
+                SELECT @result AS result;
+            `)).recordset[0]?.result
+            if (typeof lock !== 'number' || lock < 0) {
+                throw new Error('Could not reserve student marking slot')
+            }
+            const active = (await exec(transaction, `
+                SELECT COUNT(*) AS total FROM dbo.marking_jobs
+                WHERE status IN (N'processing', N'marking')
+                  AND lease_expires_at > SYSUTCDATETIME()
+                  AND attempt_deadline_at > SYSUTCDATETIME()
+            `)).recordset[0].total
+            if (active >= MARKING_MAX_CONCURRENT) return null
+
+            return (await exec(transaction, `
+                UPDATE dbo.marking_jobs
+                SET status = N'processing', owner_id = @ownerId,
+                    attempt_id = @attemptId, attempt_count = attempt_count + 1,
+                    processing_at = SYSUTCDATETIME(), marking_at = NULL,
+                    heartbeat_at = SYSUTCDATETIME(),
+                    lease_expires_at = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
+                    attempt_deadline_at = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
+                    recovery_due_at = NULL, recovery_enqueued_at = NULL,
+                    error_message = NULL, updated_at = SYSUTCDATETIME()
+                OUTPUT INSERTED.attempt_count, INSERTED.attempt_deadline_at
+                WHERE job_id = @jobId AND teacher_id = @teacherId
+                  AND lesson_id = @lessonId AND student_id = @studentId
+                  AND status = N'queued' AND attempt_count < @maxAttempts
+            `, [
+                uuidParam('jobId', jobId), textParam('ownerId', 128, ownerId),
+                uuidParam('attemptId', attemptId), intParam('teacherId', teacherId),
+                intParam('lessonId', lessonId), intParam('studentId', studentId),
+                intParam('leaseSeconds', MARKING_LEASE_SECONDS),
+                intParam('maxAttempts', MARKING_MAX_ATTEMPTS),
+            ])).recordset[0] ?? null
+        }),
+
+    getProcessingState: async jobId =>
+        (await exec(pool, `
+            SELECT status, attempt_count FROM dbo.marking_jobs WHERE job_id = @jobId
+        `, [uuidParam('jobId', jobId)])).recordset[0],
+
+    scheduleRecovery: async jobId =>
+        exec(pool, `
             UPDATE dbo.marking_jobs
-            SET status = N'processing',
-                processing_at = SYSUTCDATETIME(),
+            SET recovery_due_at = SYSUTCDATETIME(),
+                recovery_enqueued_at = NULL, updated_at = SYSUTCDATETIME()
+            WHERE job_id = @jobId AND status = N'queued'
+        `, [uuidParam('jobId', jobId)]),
+
+    heartbeat: async (jobId, attemptId) =>
+        (await exec(pool, `
+            UPDATE dbo.marking_jobs
+            SET heartbeat_at = SYSUTCDATETIME(),
+                lease_expires_at = DATEADD(SECOND, @leaseSeconds, SYSUTCDATETIME()),
                 updated_at = SYSUTCDATETIME()
-            OUTPUT INSERTED.status
-            WHERE job_id = @jobId
-              AND teacher_id = @teacherId
-              AND lesson_id = @lessonId
-              AND student_id = @studentId
-              AND status <> N'complete'
-        `, [
-            uuidParam('jobId', jobId),
-            intParam('teacherId', teacherId),
-            intParam('lessonId', lessonId),
-            intParam('studentId', studentId),
-        ])).recordset[0]
+            WHERE job_id = @jobId AND attempt_id = @attemptId
+              AND status IN (N'processing', N'marking')
+              AND lease_expires_at > SYSUTCDATETIME()
+              AND attempt_deadline_at > SYSUTCDATETIME()
+        `, [uuidParam('jobId', jobId), uuidParam('attemptId', attemptId),
+            intParam('leaseSeconds', MARKING_LEASE_SECONDS)])).rowsAffected[0] === 1,
 
-        if (updated) return true
-
-        const existing = (await exec(executor, `
-            SELECT status
-            FROM dbo.marking_jobs
-            WHERE job_id = @jobId
-              AND teacher_id = @teacherId
-              AND lesson_id = @lessonId
-              AND student_id = @studentId
-        `, [
-            uuidParam('jobId', jobId),
-            intParam('teacherId', teacherId),
-            intParam('lessonId', lessonId),
-            intParam('studentId', studentId),
-        ])).recordset[0]
-
-        // A redelivered message whose SQL transaction already committed is
-        // safe to settle without running the expensive AI call again.
-        if (existing?.status === 'complete') return false
-
-        throw new Error('Marking job not found')
-    },
-
-    markMarking: async (jobId, teacherId, lessonId, studentId, executor = pool) => {
+    markMarking: async (jobId, attemptId, teacherId, lessonId, studentId, executor = pool) => {
         const result = await exec(executor, `
             UPDATE dbo.marking_jobs
             SET status = N'marking',
                 marking_at = SYSUTCDATETIME(),
                 updated_at = SYSUTCDATETIME()
             WHERE job_id = @jobId
+              AND attempt_id = @attemptId
               AND teacher_id = @teacherId
               AND lesson_id = @lessonId
               AND student_id = @studentId
-              AND status <> N'complete'
+              AND status = N'processing'
+              AND lease_expires_at > SYSUTCDATETIME()
+              AND attempt_deadline_at > SYSUTCDATETIME()
         `, [
             uuidParam('jobId', jobId),
+            uuidParam('attemptId', attemptId),
             intParam('teacherId', teacherId),
             intParam('lessonId', lessonId),
             intParam('studentId', studentId),
         ])
 
         if (result.rowsAffected[0] !== 1) {
-            throw new Error('Marking job could not enter marking state')
+            throw new Error('Student marking attempt lost ownership before AI call')
         }
     },
+
+    finishAttemptWithError: async (jobId, attemptId) =>
+        (await exec(pool, `
+            UPDATE dbo.marking_jobs
+            SET status = CASE WHEN attempt_count >= @maxAttempts THEN N'failed' ELSE N'queued' END,
+                owner_id = NULL, attempt_id = NULL, lease_expires_at = NULL,
+                recovery_due_at = CASE WHEN attempt_count >= @maxAttempts
+                    THEN NULL ELSE DATEADD(SECOND, @resendSeconds, SYSUTCDATETIME()) END,
+                recovery_enqueued_at = NULL,
+                error_message = N'Student marking failed or timed out',
+                updated_at = SYSUTCDATETIME()
+            OUTPUT INSERTED.status
+            WHERE job_id = @jobId AND attempt_id = @attemptId
+              AND status IN (N'processing', N'marking')
+        `, [uuidParam('jobId', jobId), uuidParam('attemptId', attemptId),
+            intParam('maxAttempts', MARKING_MAX_ATTEMPTS),
+            intParam('resendSeconds', MARKING_RECOVERY_RESEND_SECONDS)])).recordset[0]?.status,
 }
 
 // The only write operation the marking worker needs: transactionally replace
@@ -205,6 +260,7 @@ export const markingJobDb = {
 export const markingDb = {
     markStudent: async (
         jobId,
+        attemptId,
         teacherId,
         studentId,
         lessonId,
@@ -216,6 +272,18 @@ export const markingDb = {
         finalResultJson = null
     ) =>
         inTransaction(async (transaction) => {
+            const owned = (await exec(transaction, `
+                SELECT 1 AS owned FROM dbo.marking_jobs WITH (UPDLOCK, HOLDLOCK)
+                WHERE job_id = @jobId AND attempt_id = @attemptId
+                  AND teacher_id = @teacherId AND lesson_id = @lessonId
+                  AND student_id = @studentId AND status = N'marking'
+                  AND lease_expires_at > SYSUTCDATETIME()
+                  AND attempt_deadline_at > SYSUTCDATETIME()
+            `, [uuidParam('jobId', jobId), uuidParam('attemptId', attemptId),
+                intParam('teacherId', teacherId), intParam('lessonId', lessonId),
+                intParam('studentId', studentId)])).recordset[0]
+            if (!owned) throw new Error('Student marking attempt no longer owns job')
+
             const existing = (await exec(transaction, `
                 SELECT mr.ocr_id, so.file_id
                 FROM dbo.marking_results AS mr
@@ -294,20 +362,27 @@ export const markingDb = {
                 UPDATE dbo.marking_jobs
                 SET status = N'complete',
                     completed_at = SYSUTCDATETIME(),
+                    lease_expires_at = NULL, recovery_due_at = NULL,
+                    recovery_enqueued_at = NULL, error_message = NULL,
                     updated_at = SYSUTCDATETIME()
                 WHERE job_id = @jobId
+                  AND attempt_id = @attemptId
                   AND teacher_id = @teacherId
                   AND lesson_id = @lessonId
                   AND student_id = @studentId
+                  AND status = N'marking'
+                  AND lease_expires_at > SYSUTCDATETIME()
+                  AND attempt_deadline_at > SYSUTCDATETIME()
             `, [
                 uuidParam('jobId', jobId),
+                uuidParam('attemptId', attemptId),
                 intParam('teacherId', teacherId),
                 intParam('lessonId', lessonId),
                 intParam('studentId', studentId),
             ])
 
             if (completed.rowsAffected[0] !== 1) {
-                throw new Error('Marking result was produced for an unknown job')
+                throw new Error('Student marking attempt timed out before result commit')
             }
         }),
 }

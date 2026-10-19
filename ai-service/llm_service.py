@@ -143,15 +143,19 @@ def _marking_rubric_without_constraints(rubric):
     return json.dumps(marking_rubric, ensure_ascii=False)
 
 
-def extract_mark_scheme(scheme_text, expected_token):
+def extract_mark_scheme(scheme_text, expected_token, timeout_seconds=None):
     user_prompt = build_extraction_prompt(scheme_text)
+    request_client = (
+        client.with_options(timeout=timeout_seconds, max_retries=0)
+        if timeout_seconds is not None else client
+    )
 
     # The SDK checks finish_reason itself and raises these two directly from
     # inside .parse() — they never reach the .refusal check below, so they
     # need their own try/except around the call itself, not a field check
     # on the response afterward.
     try:
-        response = client.chat.completions.parse(
+        response = request_client.chat.completions.parse(
             model="gpt-4o",
             temperature=0,
             messages=[
@@ -198,11 +202,15 @@ def extract_mark_scheme(scheme_text, expected_token):
     return structured_scheme
 
 
-def generate_thread_description_response(scheme_text, expected_token):
+def generate_thread_description_response(scheme_text, expected_token, timeout_seconds=None):
     user_prompt = build_thread_description_prompt(scheme_text)
+    request_client = (
+        client.with_options(timeout=timeout_seconds, max_retries=0)
+        if timeout_seconds is not None else client
+    )
 
     try:
-        response = client.chat.completions.parse(
+        response = request_client.chat.completions.parse(
             model="gpt-4o-mini",
             temperature=0.0,
             messages=[
@@ -270,7 +278,12 @@ def _thread_description_lists_to_keyed_scheme(result: ThreadDescriptionResult):
     return {"questions": questions}
 
 
-def generate_llm_response(question, essay, rubric, expected_token, max_score=6, exemplars=None):
+def generate_llm_response(question, essay, rubric, expected_token, max_score=6,
+                          exemplars=None, timeout_seconds=None):
+    request_client = (
+        client.with_options(timeout=timeout_seconds, max_retries=0)
+        if timeout_seconds is not None else client
+    )
     marking_rubric = _marking_rubric_without_constraints(rubric)
     user_prompt = build_user_prompt(
         question,
@@ -285,7 +298,7 @@ def generate_llm_response(question, essay, rubric, expected_token, max_score=6, 
     # .refusal check below, so they need their own try/except around the
     # call itself, not a field check on the response afterward.
     try:
-        response = client.chat.completions.parse(
+        response = request_client.chat.completions.parse(
             model="gpt-4o",
             temperature=0.0,
             messages=[
@@ -455,7 +468,12 @@ def generate_aggregation_response(
     mark_scheme_extraction,
     expected_token,
     include_performance=False,
+    timeout_seconds=None,
 ):
+    request_client = (
+        client.with_options(timeout=timeout_seconds, max_retries=0)
+        if timeout_seconds is not None else client
+    )
     user_prompt = build_aggregation_user_prompt(
         assessment_focus=assessment_focus,
         student_response=student_response,
@@ -464,7 +482,7 @@ def generate_aggregation_response(
     )
 
     try:
-        response = client.chat.completions.parse(
+        response = request_client.chat.completions.parse(
             model="gpt-4o-mini",
             temperature=0.0,
             messages=[
@@ -506,10 +524,15 @@ def generate_final_marking_response(
     expected_token,
     context,
     include_performance=False,
+    timeout_seconds=None,
 ):
+    request_client = (
+        client.with_options(timeout=timeout_seconds, max_retries=0)
+        if timeout_seconds is not None else client
+    )
     print("[FINAL MARKING] Sending evidence and scheme to the LLM", flush=True)
     try:
-        response = client.chat.completions.parse(
+        response = request_client.chat.completions.parse(
             model="gpt-4o-mini",
             temperature=0.0,
             messages=[

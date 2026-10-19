@@ -31,6 +31,7 @@ openssl rand -hex 32
 It only needs to exist for your local backend to sign/verify session tokens — it doesn't need to match anyone else's value.
 
 For `ai-service/local.env`, set `TORCH_DEVICE` based on your hardware (`mps` for Apple Silicon, `cuda` for Nvidia GPU, `cpu` otherwise).
+Set `DATALAB_API_KEY` for student paper OCR and `DATALAB_MARK_SCHEME_API_KEY` for mark scheme OCR. In Azure, the latter comes from the `datalabmarkschemekey` Key Vault secret referenced by the AI Container App.
 
 ### 3. Run
 

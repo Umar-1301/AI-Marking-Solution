@@ -47,10 +47,20 @@ _STUDENT_OCR_SCHEMA = json.dumps({
 })
 
 
-def _extract_student_ocr_response(file_bytes: bytes, filename: str) -> tuple[dict, dict]:
+def _extract_student_ocr_response(
+    file_bytes: bytes, filename: str, deadline: float | None = None
+) -> tuple[dict, dict]:
     api_key = os.getenv("DATALAB_API_KEY")
     if not api_key:
         raise ValueError("DATALAB_API_KEY not found in environment variables")
+
+    def remaining_time() -> float:
+        if deadline is None:
+            return 300.0
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Student marking OCR exceeded its processing deadline")
+        return remaining
 
     response = requests.post(
         _EXTRACT_URL,
@@ -60,6 +70,7 @@ def _extract_student_ocr_response(file_bytes: bytes, filename: str) -> tuple[dic
         },
         data={"output_format": "json"},
         headers={"X-Api-Key": api_key},
+        timeout=(min(10, remaining_time()), remaining_time()),
     )
 
     if response.status_code != 200:
@@ -70,8 +81,11 @@ def _extract_student_ocr_response(file_bytes: bytes, filename: str) -> tuple[dic
         raise Exception("No check URL returned from Datalab Extract API")
 
     for _ in range(_MAX_POLLS):
-        time.sleep(_POLL_SECONDS)
-        result = requests.get(check_url, headers={"X-Api-Key": api_key})
+        time.sleep(min(_POLL_SECONDS, remaining_time()))
+        result = requests.get(
+            check_url, headers={"X-Api-Key": api_key},
+            timeout=(min(10, remaining_time()), remaining_time()),
+        )
         if result.status_code != 200:
             raise Exception(f"Datalab Extract polling error: {result.status_code} {result.text}")
 
@@ -88,10 +102,12 @@ def _extract_student_ocr_response(file_bytes: bytes, filename: str) -> tuple[dic
     raise Exception("Datalab Extract timed out after 300 seconds")
 
 
-def extract_student_ocr(file_bytes: bytes, filename: str) -> dict:
-    structured_ocr, _ = _extract_student_ocr_response(file_bytes, filename)
+def extract_student_ocr(file_bytes: bytes, filename: str, deadline: float | None = None) -> dict:
+    structured_ocr, _ = _extract_student_ocr_response(file_bytes, filename, deadline)
     return structured_ocr
 
 
-def extract_student_ocr_with_raw(file_bytes: bytes, filename: str) -> tuple[dict, dict]:
-    return _extract_student_ocr_response(file_bytes, filename)
+def extract_student_ocr_with_raw(
+    file_bytes: bytes, filename: str, deadline: float | None = None
+) -> tuple[dict, dict]:
+    return _extract_student_ocr_response(file_bytes, filename, deadline)

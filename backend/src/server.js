@@ -10,8 +10,10 @@ import classRoutes from './routes/classes.js'
 import lessonRoutes from './routes/lessons.js'
 import markSchemeJobRoutes from './routes/markSchemeJobs.js'
 import { startMarkSchemeConsumer } from './services/markSchemeConsumer.js'
+import { startStudentMarkingRecovery } from './services/studentMarkingRecovery.js'
 import config from './config/index.js'
 import { poolConnect } from './db/index.js'
+import { testFlowId, traceMarkScheme } from './logging/markSchemeTrace.js'
 
 const app = express()
 
@@ -41,6 +43,24 @@ app.use(cors({
 app.use(cookieParser())
 app.use(express.json())
 
+// Test-only correlation. Normal requests produce no additional HTTP logs.
+// Successful status polling is represented by k6 state-change events instead.
+app.use((req, res, next) => {
+    const flowId = testFlowId(req)
+    if (flowId) {
+        const started = Date.now()
+        res.on('finish', () => {
+            if (req.method === 'GET' && res.statusCode < 400) return
+            traceMarkScheme('http_response', {
+                flow_id: flowId, job_id: req.markSchemeJobId ?? req.params?.jobId ?? null,
+                method: req.method, route: req.path, status: res.statusCode,
+                duration_ms: Date.now() - started,
+            })
+        })
+    }
+    next()
+})
+
 app.use('/auth', authRoutes)
 app.use('/classes', authenticate, inputSecurity, classRoutes)
 app.use('/lessons/mark-scheme-jobs', authenticate, markSchemeJobRoutes)
@@ -55,6 +75,7 @@ app.use(errorHandler)
 try {
     await poolConnect
     startMarkSchemeConsumer()
+    startStudentMarkingRecovery()
     app.listen(config.PORT, () => {
         console.log(`Backend running on port ${config.PORT}`)
     })

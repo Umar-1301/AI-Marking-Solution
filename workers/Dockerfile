@@ -12,6 +12,7 @@ RUN npm ci --omit=dev
 
 COPY --chown=node:node index.js markingWorker.js server.js ./
 COPY --chown=node:node SQL ./SQL
+COPY --chown=node:node config ./config
 COPY --chown=node:node blob ./blob
 COPY --chown=node:node logging ./logging
 COPY --chown=node:node public ./public

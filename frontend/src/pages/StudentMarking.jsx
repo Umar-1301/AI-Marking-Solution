@@ -36,6 +36,7 @@ function mergeJobStatuses(previous, jobs) {
     next[job.studentId] = {
       status: nextStatus,
       jobId: job.jobId,
+      error: job.status === 'failed' ? (job.error || 'Marking failed after retries') : null,
     }
     changed = true
   }

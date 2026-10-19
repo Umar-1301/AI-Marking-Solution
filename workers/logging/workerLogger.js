@@ -44,7 +44,7 @@ export function logInfo(message) {
 
 function jobContext(job = {}) {
     const context = job ?? {}
-    return `teacher ${context.teacherId ?? '?'} | lesson ${context.lessonId ?? '?'} | student ${context.studentId ?? '?'}`
+    return `job ${context.jobId ?? '?'} | teacher ${context.teacherId ?? '?'} | lesson ${context.lessonId ?? '?'} | student ${context.studentId ?? '?'}`
 }
 
 export function logMarkStart(job) {

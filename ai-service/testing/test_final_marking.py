@@ -469,7 +469,7 @@ class FinalMarkingServiceTests(unittest.TestCase):
             self.assertEqual(kwargs["mark_scheme_extraction"]["thread_extraction"], threads)
             return aggregation["result"]
 
-        def final(wrapped, token, context):
+        def final(wrapped, token, context, **kwargs):
             order.append("final")
             self.assertIn(f"<<<MARK_SCHEME_OCR_{token}>>>", wrapped)
             self.assertNotIn("Prior", wrapped)
@@ -514,3 +514,16 @@ class FinalMarkingServiceTests(unittest.TestCase):
 
         self.assertEqual(result["final_result"]["status"], "failed")
         self.assertEqual(result["final_result"]["model_result"], diagnostic)
+
+    def test_route_rejects_expired_worker_deadline_before_ocr(self):
+        with patch.object(self.main, "extract_student_ocr_with_raw",
+                          side_effect=AssertionError("OCR must not start")):
+            with self.assertRaises(self.main.HTTPException) as raised:
+                asyncio.run(self.main.mark_with_scheme_text(
+                    student_work=SimpleNamespace(
+                        read=AsyncMock(return_value=b"image"), filename="test.png"
+                    ),
+                    scheme_text="{}", thread_extraction="{}",
+                    x_student_marking_deadline="2000-01-01T00:00:00Z",
+                ))
+        self.assertEqual(raised.exception.status_code, 504)

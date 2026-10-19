@@ -2,8 +2,9 @@
 # A thin FastAPI service that forwards documents to external APIs. No local
 # model and no GPU are needed.
 #
-# Secrets are not baked in. At runtime the container reads DATALAB_API_KEY and
-# OPENAI_API_KEY from its environment. local.env is excluded by .dockerignore.
+# Secrets are not baked in. At runtime the container reads DATALAB_API_KEY,
+# DATALAB_MARK_SCHEME_API_KEY, and OPENAI_API_KEY from its environment.
+# local.env is excluded by .dockerignore.
 FROM python:3.11-slim
 
 WORKDIR /app

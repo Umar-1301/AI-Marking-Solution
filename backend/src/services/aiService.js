@@ -10,7 +10,7 @@ function logThreadExtraction(stage, details = '') {
 // POST /ocr — single-file OCR only, no marking.
 // Used for mark scheme processing at lesson start (first in the marking queue).
 // Returns { text, structured_scheme, thread_scheme } from the Python service.
-export async function getOcrFromAI(file) {
+export async function getOcrFromAI(file, { signal, deadlineAt, jobId, attemptId } = {}) {
     const form = new FormData()
     form.append('file', file.buffer, {
         filename:    file.originalname,
@@ -19,7 +19,7 @@ export async function getOcrFromAI(file) {
 
     logThreadExtraction(
         '1/5 Sending mark scheme to AI service',
-        `file=${file.originalname}, bytes=${file.size}`
+        `job=${jobId ?? '-'}, attempt=${attemptId ?? '-'}, file=${file.originalname}, bytes=${file.size}`
     )
 
     let response
@@ -27,7 +27,13 @@ export async function getOcrFromAI(file) {
         response = await fetch(`${config.AI_SERVICE_URL}/ocr`, {
             method:  'POST',
             body:    form,
-            headers: form.getHeaders(),
+            headers: {
+                ...form.getHeaders(),
+                ...(deadlineAt ? { 'X-Mark-Scheme-Deadline': new Date(deadlineAt).toISOString() } : {}),
+                ...(jobId ? { 'X-Mark-Scheme-Job-Id': jobId } : {}),
+                ...(attemptId ? { 'X-Mark-Scheme-Attempt-Id': attemptId } : {}),
+            },
+            signal,
         })
     } catch (fetchErr) {
         const err = new Error('AI service unreachable')
@@ -50,7 +56,7 @@ export async function getOcrFromAI(file) {
     const result = await response.json()
     logThreadExtraction(
         '2/5 AI-service response received',
-        `thread scheme ${result.thread_scheme ? 'present' : 'missing'}`
+        `job=${jobId ?? '-'}, attempt=${attemptId ?? '-'}, thread scheme ${result.thread_scheme ? 'present' : 'missing'}`
     )
 
     return {

@@ -53,7 +53,9 @@ export async function findStudentUpload(teacherId, lessonId, studentId) {
     }
 }
 
-export async function downloadStudentWork(blobName) {
-    return containerClient.getBlockBlobClient(blobName).downloadToBuffer()
+export async function downloadStudentWork(blobName, abortSignal) {
+    return containerClient.getBlockBlobClient(blobName).downloadToBuffer(
+        0, undefined, { abortSignal }
+    )
 }
 

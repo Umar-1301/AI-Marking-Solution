@@ -28,9 +28,13 @@ def _conn() -> sqlite3.Connection:
     return db
 
 
-def _embed(text: str) -> List[float]:
+def _embed(text: str, timeout_seconds: float | None = None) -> List[float]:
     from llm_service import client
-    resp = client.embeddings.create(
+    request_client = (
+        client.with_options(timeout=timeout_seconds, max_retries=0)
+        if timeout_seconds is not None else client
+    )
+    resp = request_client.embeddings.create(
         model="text-embedding-3-small",
         input=text[:8000],
     )
@@ -69,6 +73,7 @@ def get_similar(
     essay_text: str,
     question_number: Optional[str] = None,
     n: int = 3,
+    timeout_seconds: float | None = None,
 ) -> List[Dict[str, Any]]:
     db = _conn()
     if question_number:
@@ -87,7 +92,7 @@ def get_similar(
     if not rows:
         return []
 
-    query_emb = _embed(essay_text)
+    query_emb = _embed(essay_text, timeout_seconds)
     scored = []
     for row in rows:
         emb = json.loads(row["embedding"])
