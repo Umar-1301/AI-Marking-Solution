@@ -1,4 +1,13 @@
+import { testFlowId, traceMarkScheme } from '../logging/markSchemeTrace.js'
+
 export function errorHandler(err, req, res, _next) {
+    const flowId = testFlowId(req)
+    if (flowId) {
+        traceMarkScheme('http_error', {
+            flow_id: flowId, job_id: req.markSchemeJobId ?? req.params?.jobId ?? null,
+            error_type: err?.name ?? 'Error', status: err.status || 500,
+        })
+    }
     console.error(err.stack)
     const body = { error: 'An unexpected error occurred' }
     if (process.env.NODE_ENV !== 'production' && req._securityLog?.length) {

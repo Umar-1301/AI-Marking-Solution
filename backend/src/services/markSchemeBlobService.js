@@ -32,9 +32,10 @@ export async function getMarkSchemeProperties(blobName) {
     }
 }
 
-export async function downloadMarkScheme(blobName, etag) {
+export async function downloadMarkScheme(blobName, etag, abortSignal) {
     const client = containerClient.getBlockBlobClient(blobName)
     return client.downloadToBuffer(0, undefined, {
         conditions: { ifMatch: etag },
+        abortSignal,
     })
 }

@@ -385,6 +385,8 @@ router.get('/:lessonId/job-status', async (req, res, next) => {
                 jobId: job.job_id,
                 studentId: job.student_id,
                 status: job.status,
+                attemptCount: job.attempt_count,
+                error: job.status === 'failed' ? job.error_message : null,
                 queuedAt: job.queued_at,
                 processingAt: job.processing_at,
                 markingAt: job.marking_at,
@@ -499,6 +501,14 @@ router.post('/:lessonId/mark-student', async (req, res, next) => {
                 queueError.jobCleanupError = cleanupError
             }
             throw queueError
+        }
+
+        // Publication succeeded. If this update fails, the recovery scan may
+        // send a duplicate; the SQL attempt claim makes that safe.
+        try {
+            await markingJobDb.markPublished(job.job_id)
+        } catch (err) {
+            console.error(`Could not record student marking publication ${job.job_id}:`, err)
         }
 
         res.status(202).json({

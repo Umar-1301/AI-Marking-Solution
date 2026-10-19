@@ -64,6 +64,28 @@ services:
       retries: 20
       start_period: 20s
 
+  # Isolated SQL Server for AI-service evaluation runs. The profile keeps it
+  # out of the normal local stack unless explicitly requested. It has its own
+  # host port and persistent volume, and has no Service Bus dependency.
+  ai-testing-mssql:
+    profiles: ["ai-testing"]
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: aimira-ai-testing-mssql
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: "Developer"
+      MSSQL_SA_PASSWORD: "${AI_TEST_SQL_PASSWORD:?Set AI_TEST_SQL_PASSWORD in the root .env file}"
+    ports:
+      - "1434:1433"
+    volumes:
+      - ai_testing_mssqldata:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/localhost/1433' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+
   # Local stand-in for Azure Blob Storage — same Blob REST API (SAS tokens,
   # containers, blobs all behave the same), so the SAS-based upload flow this
   # app is moving to can be built and exercised entirely locally before any
@@ -161,5 +183,6 @@ services:
 volumes:
   pgdata:
   mssqldata:
+  ai_testing_mssqldata:
   azuritedata:
   servicebussqldata:

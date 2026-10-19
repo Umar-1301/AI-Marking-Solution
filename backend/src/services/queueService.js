@@ -44,6 +44,7 @@ export async function sendStudentMarkingRequest(request) {
         body: request,
         contentType: 'application/json',
         subject: 'student-marking-request',
+        messageId: request.jobId,
     })
 }
 

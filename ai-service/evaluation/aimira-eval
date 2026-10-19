@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+EVALUATION_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+AI_SERVICE_DIR="$(cd "$EVALUATION_DIR/.." && pwd)"
+PYTHON_EXECUTABLE="$AI_SERVICE_DIR/../.venv/bin/python"
+
+if [[ ! -x "$PYTHON_EXECUTABLE" ]]; then
+    echo "Error: project Python was not found at $PYTHON_EXECUTABLE" >&2
+    echo "Create the project virtual environment before running evaluations." >&2
+    exit 1
+fi
+
+cd "$AI_SERVICE_DIR"
+exec "$PYTHON_EXECUTABLE" -m evaluation.cli "$@"

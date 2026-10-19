@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Aimira AI Evaluations</title>
+    <link rel="stylesheet" href="/assets/dashboard.css?v=3">
+</head>
+<body>
+    <header class="app-header">
+        <div>
+            <p class="eyebrow">AI service</p>
+            <h1>Evaluation dashboard</h1>
+            <p class="subtitle">Stored prompt runs, outputs and model performance.</p>
+        </div>
+        <button id="refresh-button" class="secondary-button" type="button">Refresh</button>
+    </header>
+
+    <div class="layout">
+        <aside class="sidebar" aria-label="Evaluation targets">
+            <div class="section-heading">
+                <h2>Targets</h2>
+                <span id="target-count" class="count">0</span>
+            </div>
+            <div id="target-list" class="target-list" aria-live="polite">
+                <p class="muted">Loading targets…</p>
+            </div>
+        </aside>
+
+        <main id="dashboard-content" class="content" aria-live="polite">
+            <section class="empty-state">
+                <p class="eyebrow">Select a target</p>
+                <h2>Evaluation results will appear here.</h2>
+                <p>Choose a target to inspect its datasets, individual runs and performance.</p>
+            </section>
+        </main>
+    </div>
+
+    <script src="/assets/dashboard.js?v=3" defer></script>
+</body>
+</html>

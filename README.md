@@ -31,6 +31,7 @@ openssl rand -hex 32
 It only needs to exist for your local backend to sign/verify session tokens — it doesn't need to match anyone else's value.
 
 For `ai-service/local.env`, set `TORCH_DEVICE` based on your hardware (`mps` for Apple Silicon, `cuda` for Nvidia GPU, `cpu` otherwise).
+Set `DATALAB_API_KEY` for student paper OCR and `DATALAB_MARK_SCHEME_API_KEY` for mark scheme OCR. In Azure, the latter comes from the `datalabmarkschemekey` Key Vault secret referenced by the AI Container App.
 
 ### 3. Run
 
@@ -240,7 +241,7 @@ When deploying to Azure Container Apps, these values will be pulled from Azure K
 
 **Problem**
 
-Azure Container Apps places an ingress proxy in front of every container. Without `trust proxy`, Express reads `req.ip` as the proxy's internal IP address rather than the real client IP. This causes every user's request to appear to come from the same address, which collapses all users into a single rate-limit bucket — the global 100-requests-per-hour limit would be hit immediately under any real load.
+Azure Container Apps places an ingress proxy in front of every container. Without `trust proxy`, Express reads `req.ip` as the proxy's internal IP address rather than the real client IP.
 
 **Fix**
 
@@ -435,7 +436,7 @@ Three new pages: **Home** (class selection, mark scheme upload, NDJSON-driven pr
 | Layer | Control |
 |---|---|
 | Database | Parameterised queries, least-privilege accessors, FK constraints, WAL mode, sqlite file gitignored |
-| Auth | bcrypt + pepper, HMAC email hash, httpOnly+sameSite cookie, JWT 1h expiry, rate limiting, password blacklist |
+| Auth | bcrypt + pepper, HMAC email hash, httpOnly+sameSite cookie, JWT 1h expiry, login attempt lockout, password blacklist |
 | Middleware | inputSecurity (prototype pollution, depth, array, string), file security (MIME + magic byte + size) |
 | Route handlers | Ownership checks on every class/student operation, year validation, duplicate detection |
 | Frontend | React JSX escaping, sanitiseInput + containsHtml + validatePayload before API calls, maxLength on all inputs |

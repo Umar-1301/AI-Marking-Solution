@@ -33,6 +33,43 @@ backend/src/data/*.sqlite-journal
 backend/src/data/*.sqlite-wal
 backend/src/data/*.sqlite-shm
 
+# Terraform infra lives in its own folder and is not versioned in this repo.
+infra/
+
+# Private keys, certificates and Terraform working data — state files can embed secrets.
+*.pem
+*.key
+*.pfx
+*.p12
+**/.terraform/
+*.tfstate
+*.tfstate.*
+
+# Any SQLite store, wherever it lives (RAG exemplars, local test data)
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# SQL Server data files and backups. The evaluation database stores verbatim
+# student essays and model output, so a copied volume or .bak is student data.
+*.bak
+*.mdf
+*.ldf
+*.ndf
+
+# Local database migration scripts run manually against existing databases
+backend/db/migrations/
+
+# AI evaluation suite — imported datasets and result exports contain real
+# student work. Only source code and schema belong in version control.
+ai-service/evaluation/exports/
+ai-service/evaluation/data/
+
+# Load-test harness, results and private account fixtures — local only, never published
+load-tests/
+
 # Python — virtualenvs, bytecode, and tool caches
 **/venv/
 **/.venv/

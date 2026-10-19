@@ -7,6 +7,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon --env-file=.env src/server.js",
     "db:init": "node --env-file=.env db/apply-schema.mjs",
+    "db:migrate:mark-scheme": "node --env-file=.env db/apply-mark-scheme-migration.mjs",
+    "db:migrate:student-marking": "node --env-file=.env db/apply-student-marking-migration.mjs",
     "blob:init": "node --env-file=.env blob/init-container.mjs"
   },
   "keywords": [],
@@ -21,7 +23,6 @@
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.3.1",
     "file-type": "^22.0.1",
     "form-data": "^4.0.5",
     "heic-convert": "^2.1.0",

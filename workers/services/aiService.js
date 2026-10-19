@@ -6,7 +6,8 @@ const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:8000'
 export async function getMarkFromAIWithSchemeText(
     studentWorkFile,
     schemeText,
-    threadExtraction = ''
+    threadExtraction = '',
+    { signal, deadlineAt, jobId, attemptId } = {}
 ) {
     const form = new FormData()
     form.append('student_work', studentWorkFile.buffer, {
@@ -21,9 +22,16 @@ export async function getMarkFromAIWithSchemeText(
         response = await fetch(`${AI_SERVICE_URL}/mark-with-scheme-text`, {
             method: 'POST',
             body: form,
-            headers: form.getHeaders(),
+            headers: {
+                ...form.getHeaders(),
+                ...(deadlineAt ? { 'X-Student-Marking-Deadline': new Date(deadlineAt).toISOString() } : {}),
+                ...(jobId ? { 'X-Student-Marking-Job-Id': jobId } : {}),
+                ...(attemptId ? { 'X-Student-Marking-Attempt-Id': attemptId } : {}),
+            },
+            signal,
         })
     } catch (fetchErr) {
+        if (signal?.aborted) throw signal.reason ?? fetchErr
         const err = new Error('AI service unreachable')
         err.aiStatus = null
         err.aiErrorCode = fetchErr.code ?? 'FETCH_ERROR'

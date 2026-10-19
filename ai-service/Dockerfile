@@ -1,12 +1,10 @@
-# ---- ai-service: OCR via Azure AI Document Intelligence ----
-# A thin FastAPI service that forwards documents to Document Intelligence. No local
-# model and no GPU, so this is a small slim image (the old CUDA + baked-weights
-# image is gone).
+# ---- ai-service: OCR via Datalab and extraction via OpenAI ----
+# A thin FastAPI service that forwards documents to external APIs. No local
+# model and no GPU are needed.
 #
-# Secrets are NOT baked in. At runtime the container reads AZURE_DOCINTEL_ENDPOINT
-# and AZURE_DOCINTEL_KEY from the environment, injected from Azure Key Vault via the
-# container's managed identity — never from local.env (which is dev-only and
-# excluded by .dockerignore).
+# Secrets are not baked in. At runtime the container reads DATALAB_API_KEY,
+# DATALAB_MARK_SCHEME_API_KEY, and OPENAI_API_KEY from its environment.
+# local.env is excluded by .dockerignore.
 FROM python:3.11-slim
 
 WORKDIR /app
