@@ -59,9 +59,6 @@ infra/
 *.ldf
 *.ndf
 
-# Local database migration scripts run manually against existing databases
-backend/db/migrations/
-
 # AI evaluation suite — imported datasets and result exports contain real
 # student work. Only source code and schema belong in version control.
 ai-service/evaluation/exports/
