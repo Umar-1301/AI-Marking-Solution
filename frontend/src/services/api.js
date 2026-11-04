@@ -231,6 +231,25 @@ export async function uploadToBlob(uploadUrl, file) {
 
 // Queues a marking request for work already stored in Blob Storage.
 // Only identifiers cross this request; teacherId comes from the JWT cookie.
+export async function markStudentsWork(lessonId, studentIds) {
+    const response = await fetch(`${API_BASE}/lessons/${lessonId}/mark-students`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ studentIds }),
+    })
+    if (response.status === 401) {
+        throw new Error('Your session has expired. Please log in again.')
+    }
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.includes('json')) {
+        throw new Error(`Server error (${response.status}) — is the backend running?`)
+    }
+    const data = await response.json()
+    if (!response.ok) throw new Error(data.error || 'Failed to queue student work')
+    return data
+}
+
 export async function markStudentWork(lessonId, studentId) {
     const response = await fetch(`${API_BASE}/lessons/${lessonId}/mark-student`, {
         method: 'POST',

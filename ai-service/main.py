@@ -2,6 +2,8 @@ import os
 import sys
 import json as _json
 import time
+import re
+from hashlib import sha256
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,7 +35,9 @@ from llm_service import (
     generate_llm_response,
 )
 from ocr_service import extract_text_from_file
-from student_ocr_service import extract_student_ocr_with_raw
+from student_ocr_service import (
+    extract_student_ocr_batch, extract_student_ocr_pdf, extract_student_ocr_with_raw,
+)
 from rag_service import add_exemplar, get_similar, list_exemplars, delete_exemplar
 from security import ms_ocr_sanitisation
 from validation.descriptor_id_enrichment import add_descriptor_ids
@@ -266,21 +270,11 @@ def _assessment_objective_descriptions_from_scheme(
 # ── POST /mark-with-scheme-text ───────────────────────────────────────────────
 # Like /mark but accepts the mark scheme as pre-extracted text rather than a
 # file — avoids re-OCRing the scheme on every student submission.
-@app.post("/mark-with-scheme-text")
-async def mark_with_scheme_text(
-    student_work:      UploadFile = File(...),
-    scheme_text:       str        = Form(...),
-    thread_extraction: str        = Form(default=''),
-    x_student_marking_deadline: str | None = Header(default=None),
-):
-    # Blocking OCR and LLM calls run in FastAPI's thread pool. The deadline
-    # travels from the worker and bounds each third-party request.
-    remaining_seconds = 300.0
-    if isinstance(x_student_marking_deadline, str) and x_student_marking_deadline:
+def _student_deadline(header: str | None, maximum_seconds: float = 300.0) -> float:
+    remaining_seconds = maximum_seconds
+    if isinstance(header, str) and header:
         try:
-            requested_deadline = datetime.fromisoformat(
-                x_student_marking_deadline.replace("Z", "+00:00")
-            )
+            requested_deadline = datetime.fromisoformat(header.replace("Z", "+00:00"))
             if requested_deadline.tzinfo is None:
                 raise ValueError("deadline must include timezone")
         except ValueError as exc:
@@ -291,12 +285,130 @@ async def mark_with_scheme_text(
         )
     if remaining_seconds <= 0:
         raise HTTPException(status_code=504, detail="Student marking timed out")
-    deadline = time.monotonic() + remaining_seconds
+    return time.monotonic() + remaining_seconds
+
+
+@app.post("/mark-with-scheme-text")
+async def mark_with_scheme_text(
+    student_work:      UploadFile = File(...),
+    scheme_text:       str        = Form(...),
+    thread_extraction: str        = Form(default=''),
+    x_student_marking_deadline: str | None = Header(default=None),
+):
+    # Blocking OCR and LLM calls run in FastAPI's thread pool. The deadline
+    # travels from the worker and bounds each third-party request.
+    deadline = _student_deadline(x_student_marking_deadline)
 
     student_bytes = await student_work.read()
     return await run_in_threadpool(
         _process_student_marking, student_bytes, student_work.filename,
         scheme_text, thread_extraction, deadline,
+    )
+
+
+@app.post("/student-ocr-batch")
+async def student_ocr_batch(
+    student_works: list[UploadFile] = File(...),
+    slot_keys: list[str] = Form(...),
+    x_student_marking_deadline: str | None = Header(default=None),
+):
+    if len(student_works) != len(slot_keys) or not student_works:
+        raise HTTPException(status_code=400, detail="Batch files and slot keys must match")
+    deadline = _student_deadline(x_student_marking_deadline, 900.0)
+    jpegs = [await file.read() for file in student_works]
+    names = [re.fullmatch(
+        r"queue-test-([A-Za-z0-9-]+)-u(\d+)-student-\d+\.jpe?g",
+        file.filename or "", re.IGNORECASE,
+    ) for file in student_works]
+    same_run = all(names) and all(
+        match.group(1) == names[0].group(1) and match.group(2) == names[0].group(2)
+        for match in names
+    )
+    monitor = {
+        "run_key": names[0].group(1),
+        "user_slot": int(names[0].group(2)),
+        "batch_key": sha256("|".join(sorted(slot_keys)).encode()).hexdigest()[:16],
+        "file_count": len(jpegs),
+    } if same_run else None
+    try:
+        texts = await run_in_threadpool(extract_student_ocr_batch, jpegs, deadline, monitor)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        # This endpoint is used only by the local batch experiment. Return
+        # the provider failure so the worker log identifies the failed stage.
+        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {str(exc)[:250]}") from exc
+    return {
+        "page_count": len(texts),
+        "students": [
+            {"slot_key": key, "handwritten_work": text}
+            for key, text in zip(slot_keys, texts) if text is not None
+        ],
+        "empty_slot_keys": [
+            key for key, text in zip(slot_keys, texts) if text is None
+        ],
+    }
+
+
+@app.post("/student-ocr-pdf-batch")
+async def student_ocr_pdf_batch(
+    batch_pdf: UploadFile = File(...),
+    page_keys: list[str] = Form(...),
+    source_names: list[str] = Form(default=[]),
+    x_student_marking_deadline: str | None = Header(default=None),
+):
+    if not 1 <= len(page_keys) <= 6 or len(set(page_keys)) != len(page_keys):
+        raise HTTPException(status_code=400, detail="Provide 1 to 6 unique page keys")
+    if batch_pdf.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="Combined OCR file must be a PDF")
+    if source_names and len(source_names) != len(page_keys):
+        raise HTTPException(status_code=400, detail="Source names must match pages")
+    deadline = _student_deadline(x_student_marking_deadline, 900.0)
+    pdf_bytes = await batch_pdf.read()
+    names = [re.fullmatch(
+        r"queue-test-([A-Za-z0-9-]+)-u(\d+)-student-\d+\.jpe?g",
+        name, re.IGNORECASE,
+    ) for name in source_names]
+    same_run = names and all(names) and all(
+        match.group(1) == names[0].group(1) and match.group(2) == names[0].group(2)
+        for match in names
+    )
+    monitor = {
+        "run_key": names[0].group(1),
+        "user_slot": int(names[0].group(2)),
+        "batch_key": sha256("|".join(page_keys).encode()).hexdigest()[:16],
+        "file_count": len(set(source_names)),
+    } if same_run else None
+    try:
+        texts = await run_in_threadpool(
+            extract_student_ocr_pdf, pdf_bytes, len(page_keys), deadline, monitor
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{type(exc).__name__}: {str(exc)[:250]}") from exc
+    return {
+        "page_count": len(texts),
+        "students": [
+            {"slot_key": key, "handwritten_work": text}
+            for key, text in zip(page_keys, texts) if text is not None
+        ],
+        "empty_slot_keys": [
+            key for key, text in zip(page_keys, texts) if text is None
+        ],
+    }
+
+
+@app.post("/mark-with-ocr-text")
+async def mark_with_ocr_text(
+    student_ocr_text: str = Form(...),
+    scheme_text: str = Form(...),
+    thread_extraction: str = Form(default=''),
+    x_student_marking_deadline: str | None = Header(default=None),
+):
+    deadline = _student_deadline(x_student_marking_deadline, 900.0)
+    return await run_in_threadpool(
+        _mark_student_text, student_ocr_text, scheme_text, thread_extraction, deadline
     )
 
 
@@ -317,6 +429,15 @@ def _process_student_marking(student_bytes, filename, scheme_text, thread_extrac
     save_raw_student_ocr_response(structured_ocr, raw_ocr)
     raw_text       = structured_ocr.get("handwritten_work", "")
     log_student_ocr_done(len(raw_text))
+    return _mark_student_text(raw_text, scheme_text, thread_extraction, deadline)
+
+
+def _mark_student_text(raw_text, scheme_text, thread_extraction, deadline):
+    def time_left() -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(status_code=504, detail="Student marking timed out")
+        return remaining
 
     # Same treatment as /ocr gives the mark scheme, run BEFORE sanitize() for
     # the same reason: sanitize()'s HTML-tag stripping (<[^>]*>) matches from

@@ -1,6 +1,7 @@
 import { ServiceBusClient } from '@azure/service-bus'
 import { DefaultAzureCredential } from '@azure/identity'
 import config from '../config/index.js'
+import { STUDENT_OCR_RETRY_LOCAL } from '../config/studentMarkingProcessing.js'
 
 // The only place a ServiceBusClient gets constructed — same reasoning as
 // db/index.js having the one dbConfig branch: one call site, one place to
@@ -33,6 +34,8 @@ const serviceBusClient = config.AZURE_SERVICEBUS_CONNECTION_STRING
 
 const STUDENT_MARKING_QUEUE = 'student-marking'
 const studentMarkingSender = serviceBusClient.createSender(STUDENT_MARKING_QUEUE)
+const studentOcrRetrySender = STUDENT_OCR_RETRY_LOCAL
+    ? serviceBusClient.createSender('student-ocr-retry') : null
 export const MARK_SCHEME_QUEUE = 'mark-scheme-processing'
 const markSchemeSender = serviceBusClient.createSender(MARK_SCHEME_QUEUE)
 
@@ -45,6 +48,16 @@ export async function sendStudentMarkingRequest(request) {
         contentType: 'application/json',
         subject: 'student-marking-request',
         messageId: request.jobId,
+    })
+}
+
+export async function sendStudentOcrRetryRequest(request) {
+    if (!studentOcrRetrySender) throw new Error('Local student OCR retry queue is disabled')
+    await studentOcrRetrySender.sendMessages({
+        body: request,
+        contentType: 'application/json',
+        subject: 'student-ocr-retry',
+        messageId: `${request.jobId}-ocr-retry-${request.attemptCount}`,
     })
 }
 

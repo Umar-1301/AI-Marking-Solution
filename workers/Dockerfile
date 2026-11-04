@@ -17,6 +17,7 @@ COPY --chown=node:node blob ./blob
 COPY --chown=node:node logging ./logging
 COPY --chown=node:node public ./public
 COPY --chown=node:node services ./services
+COPY --chown=node:node security ./security
 COPY --chown=node:node utils ./utils
 
 RUN mkdir -p logs && chown node:node logs

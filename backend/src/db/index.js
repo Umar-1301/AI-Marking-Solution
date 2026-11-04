@@ -10,6 +10,7 @@ import {
 import {
     STUDENT_MARKING_MAX_ATTEMPTS,
     STUDENT_MARKING_RECOVERY_RESEND_SECONDS,
+    STUDENT_OCR_RETRY_LOCAL,
 } from '../config/studentMarkingProcessing.js'
 
 // Azure SQL connection pool. Authentication uses Entra ID through
@@ -469,6 +470,22 @@ export const markingDb = {
 // job before publishing it, then exposes the worker-owned status through an
 // ownership-scoped read route.
 export const markingJobDb = {
+    // One statement makes every selected student visible to batch planning at
+    // the same time. Recovery can publish rows if the HTTP publisher stops.
+    createQueuedBulk: async (teacherId, lessonId, studentIds) =>
+        (await exec(pool, `
+            INSERT INTO dbo.marking_jobs
+                (teacher_id, lesson_id, student_id, status, recovery_due_at)
+            OUTPUT CONVERT(NVARCHAR(36), INSERTED.job_id) AS job_id,
+                   INSERTED.student_id
+            SELECT @teacherId, @lessonId, ids.student_id, N'queued', SYSUTCDATETIME()
+            FROM OPENJSON(@studentIds) WITH (student_id INT '$') AS ids
+        `, [
+            intParam('teacherId', teacherId),
+            intParam('lessonId', lessonId),
+            textParam('studentIds', 4000, JSON.stringify(studentIds)),
+        ])).recordset,
+
     createQueued: async (teacherId, lessonId, studentId, e = pool) =>
         (await exec(e, `
             INSERT INTO dbo.marking_jobs
@@ -542,6 +559,16 @@ export const markingJobDb = {
 
     recoverExpiredAttempts: async () =>
         exec(pool, `
+            ${STUDENT_OCR_RETRY_LOCAL ? `
+            UPDATE tries
+            SET outcome = N'interrupted', finished_at = SYSUTCDATETIME()
+            FROM dbo.marking_ocr_tries AS tries
+            JOIN dbo.marking_jobs AS jobs ON jobs.try_id = tries.try_id
+            WHERE jobs.status = N'processing'
+              AND tries.outcome = N'processing'
+              AND (jobs.lease_expires_at <= SYSUTCDATETIME()
+                   OR jobs.attempt_deadline_at <= SYSUTCDATETIME());
+            ` : ''}
             UPDATE dbo.marking_jobs
             SET status = CASE WHEN attempt_count >= @maxAttempts THEN N'failed' ELSE N'queued' END,
                 owner_id = NULL, attempt_id = NULL, lease_expires_at = NULL,
@@ -572,6 +599,7 @@ export const markingJobDb = {
             OUTPUT CONVERT(NVARCHAR(36), INSERTED.job_id) AS job_id,
                    INSERTED.teacher_id, INSERTED.lesson_id, INSERTED.student_id,
                    INSERTED.attempt_count
+                   ${STUDENT_OCR_RETRY_LOCAL ? ', INSERTED.ocr_retry_pending' : ''}
             WHERE status = N'queued' AND recovery_due_at <= SYSUTCDATETIME()
               AND attempt_count < @maxAttempts
               AND (recovery_enqueued_at IS NULL OR recovery_enqueued_at <=

@@ -422,6 +422,66 @@ router.post('/:lessonId/students/:studentId/upload-url', async (req, res, next) 
     }
 })
 
+// The Mark button submits all uploaded students together, so the worker sees
+// the complete queued set when it chooses OCR batch sizes. One student works
+// through this same route.
+router.post('/:lessonId/mark-students', async (req, res, next) => {
+    const lessonId = Number(req.params.lessonId)
+    const teacherId = req.user.id
+    const studentIds = req.body?.studentIds
+    if (!Number.isSafeInteger(lessonId) || lessonId <= 0 ||
+        !Array.isArray(studentIds) || studentIds.length < 1 ||
+        studentIds.length > 200 ||
+        studentIds.some(id => !Number.isSafeInteger(id) || id <= 0) ||
+        new Set(studentIds).size !== studentIds.length) {
+        return res.status(400).json({ error: 'Provide 1 to 200 unique student IDs' })
+    }
+
+    try {
+        const scheme = await lessonDb.getOcrText(lessonId, teacherId)
+        if (!scheme) return res.status(404).json({ error: 'Lesson not found' })
+
+        const invalid = await Promise.all(studentIds.map(async studentId => {
+            const valid = await markingDb.validateStudent(studentId, lessonId, teacherId)
+            if (!valid) return studentId
+            const upload = await findStudentUpload(teacherId, lessonId, studentId)
+            return upload ? null : studentId
+        }))
+        const missingId = invalid.find(id => id !== null)
+        if (missingId !== undefined) {
+            return res.status(400).json({
+                error: `Student ${missingId} is not in this lesson or has no uploaded work`,
+            })
+        }
+
+        const rows = await markingJobDb.createQueuedBulk(teacherId, lessonId, studentIds)
+        if (rows.length !== studentIds.length) {
+            throw new Error('Not all student marking jobs were created')
+        }
+
+        // Rows are already durable and recovery-eligible. If a send fails,
+        // the recovery scanner publishes it; the client must not resubmit.
+        for (const row of rows) {
+            try {
+                await sendStudentMarkingRequest({
+                    jobId: row.job_id, teacherId, lessonId,
+                    studentId: row.student_id,
+                })
+                await markingJobDb.markPublished(row.job_id)
+            } catch (err) {
+                console.error(`Could not publish student marking job ${row.job_id}:`, err)
+            }
+        }
+
+        res.status(202).json({
+            ok: true,
+            jobs: rows.map(row => ({ jobId: row.job_id, studentId: row.student_id })),
+        })
+    } catch (err) {
+        next(err)
+    }
+})
+
 // POST /lessons/:lessonId/mark-student — verify the authenticated teacher,
 // lesson, student and uploaded work, then hand the request to the marking
 // worker through Service Bus. Marking is deliberately no longer performed by

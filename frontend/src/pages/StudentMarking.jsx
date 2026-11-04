@@ -8,7 +8,7 @@ import {
   getMarkingJobStatuses,
   getUploadUrl,
   uploadToBlob,
-  markStudentWork,
+  markStudentsWork,
 } from '../services/api'
 
 const CIRCUMFERENCE = 2 * Math.PI * 26
@@ -283,36 +283,31 @@ function StudentMarking() {
     setIsMarkingRun(true)
 
     try {
-      // Queue sequentially. Each student's HTTP request settles before the
-      // next request starts.
-      for (const studentId of studentIdsToMark) {
-        setMarkStates(previous => ({
-          ...previous,
-          [studentId]: { status: 'queueing' },
-        }))
-
-        try {
-          const job = await markStudentWork(lessonId, studentId)
-
-          setMarkStates(previous => ({
-            ...previous,
-            [studentId]: {
-              status: 'queued',
-              jobId: job.jobId,
-            },
-          }))
-        } catch (err) {
-          setMarkStates(previous => ({
-            ...previous,
-            [studentId]: {
-              status: 'failed',
-              error: err.message,
-            },
-          }))
-
-          // Continue processing the remaining uploaded students.
-        }
+      setMarkStates(previous => ({
+        ...previous,
+        ...Object.fromEntries(studentIdsToMark.map(studentId => [
+          studentId, { status: 'queueing' },
+        ])),
+      }))
+      const response = await markStudentsWork(lessonId, studentIdsToMark)
+      const jobs = new Map(response.jobs.map(job => [job.studentId, job.jobId]))
+      if (jobs.size !== studentIdsToMark.length ||
+          studentIdsToMark.some(studentId => !jobs.has(studentId))) {
+        throw new Error('The server did not return every student job')
       }
+      setMarkStates(previous => ({
+        ...previous,
+        ...Object.fromEntries(studentIdsToMark.map(studentId => [
+          studentId, { status: 'queued', jobId: jobs.get(studentId) },
+        ])),
+      }))
+    } catch (err) {
+      setMarkStates(previous => ({
+        ...previous,
+        ...Object.fromEntries(studentIdsToMark.map(studentId => [
+          studentId, { status: 'failed', error: err.message },
+        ])),
+      }))
     } finally {
       setIsMarkingRun(false)
     }

@@ -16,9 +16,13 @@
     "@azure/service-bus": "^7.9.5",
     "@azure/storage-blob": "^12.33.0",
     "express": "^5.2.1",
+    "file-type": "^22.3.0",
     "form-data": "^4.0.6",
+    "heic-convert": "^2.1.0",
     "mssql": "^12.7.0",
     "node-fetch": "^3.3.2",
+    "pdf-lib": "^1.17.1",
+    "sharp": "^0.34.5",
     "winston": "^3.19.0",
     "winston-daily-rotate-file": "^5.0.0"
   },

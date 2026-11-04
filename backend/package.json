@@ -9,6 +9,7 @@
     "db:init": "node --env-file=.env db/apply-schema.mjs",
     "db:migrate:mark-scheme": "node --env-file=.env db/apply-mark-scheme-migration.mjs",
     "db:migrate:student-marking": "node --env-file=.env db/apply-student-marking-migration.mjs",
+    "db:migrate:student-ocr-retry-local": "node --env-file=.env db/apply-student-ocr-retry-local.mjs",
     "blob:init": "node --env-file=.env blob/init-container.mjs"
   },
   "keywords": [],

@@ -50,6 +50,7 @@ export async function findStudentUpload(teacherId, lessonId, studentId) {
         blobName: latestBlob.name,
         fileName: latestBlob.name.slice(prefix.length),
         mimeType: latestBlob.properties.contentType || 'application/octet-stream',
+        size: latestBlob.properties.contentLength,
     }
 }
 

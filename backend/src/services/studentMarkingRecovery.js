@@ -1,5 +1,8 @@
 import { markingJobDb } from '../db/index.js'
-import { sendStudentMarkingRequest } from './queueService.js'
+import {
+    sendStudentMarkingRequest,
+    sendStudentOcrRetryRequest,
+} from './queueService.js'
 import { STUDENT_MARKING_RECOVERY_SCAN_MS } from '../config/studentMarkingProcessing.js'
 
 let running = false
@@ -13,11 +16,14 @@ async function scan() {
         const jobs = await markingJobDb.reserveRecoveryJobs()
         for (const job of jobs) {
             try {
-                await sendStudentMarkingRequest({
+                const send = job.ocr_retry_pending
+                    ? sendStudentOcrRetryRequest : sendStudentMarkingRequest
+                await send({
                     jobId: job.job_id,
                     teacherId: job.teacher_id,
                     lessonId: job.lesson_id,
                     studentId: job.student_id,
+                    attemptCount: job.attempt_count,
                 })
                 await markingJobDb.markPublished(job.job_id, job.attempt_count)
             } catch (err) {
